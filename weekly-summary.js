@@ -7,6 +7,7 @@ import {
   createWeeklyTaskEntry,
   updateWeeklyTaskEntry,
   deleteWeeklyTaskEntry,
+  updateMeetingWeekFields,
 } from "./shared/db.js";
 import { sourceIdOf, sourceColumnFor, buildLabelMap } from "./shared/taskLabels.js";
 
@@ -49,8 +50,68 @@ function riskOptionsHtml(selected) {
   ).join("");
 }
 
+function isSummaryLocked() {
+  return !!targetWeek?.summary_locked_at;
+}
+
+function renderLockUI() {
+  const lockBtn = document.getElementById("lock-btn");
+  const unlockBtn = document.getElementById("unlock-btn");
+  const unlockForm = document.getElementById("unlock-form");
+  const statusEl = document.getElementById("lock-status");
+  unlockForm.hidden = true;
+  if (!targetWeek) return;
+
+  const locked = isSummaryLocked();
+  lockBtn.hidden = locked;
+  unlockBtn.hidden = !locked;
+
+  let text = locked
+    ? `🔒 本周总结已锁定（${new Date(targetWeek.summary_locked_at).toLocaleString()}），编辑前需先解锁`
+    : "";
+  if (targetWeek.summary_amendment_note) {
+    text += `${text ? " ｜ " : ""}⚠ 曾被订正：${targetWeek.summary_amendment_note}`;
+  }
+  statusEl.textContent = text;
+  statusEl.className = locked ? "status warn" : "status";
+}
+
+document.getElementById("lock-btn").addEventListener("click", async () => {
+  const updated = await updateMeetingWeekFields(targetWeek.id, { summary_locked_at: new Date().toISOString() });
+  Object.assign(targetWeek, updated);
+  renderLockUI();
+  await loadSummary();
+});
+
+document.getElementById("unlock-btn").addEventListener("click", () => {
+  document.getElementById("unlock-form").hidden = false;
+});
+document.getElementById("unlock-cancel-btn").addEventListener("click", () => {
+  document.getElementById("unlock-form").hidden = true;
+});
+document.getElementById("unlock-confirm-btn").addEventListener("click", async () => {
+  const note = document.getElementById("unlock-note").value.trim();
+  if (!note) {
+    alert("请填写订正说明");
+    return;
+  }
+  const updated = await updateMeetingWeekFields(targetWeek.id, {
+    summary_locked_at: null,
+    summary_amendment_note: note,
+  });
+  Object.assign(targetWeek, updated);
+  document.getElementById("unlock-note").value = "";
+  renderLockUI();
+  await loadSummary();
+});
+
 async function generateSkeleton() {
   const resultEl = document.getElementById("skeleton-result");
+  if (isSummaryLocked()) {
+    resultEl.textContent = "本周总结已锁定，请先解锁再生成";
+    resultEl.className = "status warn";
+    return;
+  }
   resultEl.textContent = "生成中...";
   resultEl.className = "status";
   try {
@@ -91,27 +152,28 @@ async function loadSummary() {
 
   const tbody = document.getElementById("summary-tbody");
   tbody.innerHTML = "";
+  const dis = isSummaryLocked() ? "disabled" : "";
   for (const e of entries) {
     const label = labelMap.get(`${e.source_type}:${sourceIdOf(e)}`) || "(未知任务)";
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${label}</td>
       <td>
-        <select class="f-category">
+        <select class="f-category" ${dis}>
           <option value="计划内" ${e.summary_category === "计划内" ? "selected" : ""}>计划内</option>
           <option value="计划外" ${e.summary_category === "计划外" ? "selected" : ""}>计划外</option>
         </select>
       </td>
-      <td><select class="f-module">${moduleOptionsHtml(e.module_id)}</select></td>
-      <td><input type="text" class="f-owner" value="${e.owner || ""}" style="width:5em" /></td>
-      <td><input type="text" class="f-deliverable" value="${e.deliverable_this_week || ""}" style="width:12em" /></td>
-      <td><input type="number" class="f-hours" step="0.5" value="${e.actual_hours ?? ""}" style="width:4em" /></td>
-      <td><select class="f-status">${statusOptionsHtml(e.status)}</select></td>
-      <td><input type="text" class="f-reason" value="${e.incomplete_reason || ""}" style="width:10em" /></td>
-      <td><input type="text" class="f-rectify" value="${e.rectification_measures || ""}" style="width:10em" /></td>
-      <td><select class="f-risk">${riskOptionsHtml(e.risk_level)}</select></td>
-      <td><input type="checkbox" class="f-highlight" ${e.highlight ? "checked" : ""} /></td>
-      <td><button type="button" class="secondary f-delete">删除</button></td>
+      <td><select class="f-module" ${dis}>${moduleOptionsHtml(e.module_id)}</select></td>
+      <td><input type="text" class="f-owner" value="${e.owner || ""}" style="width:5em" ${dis} /></td>
+      <td><input type="text" class="f-deliverable" value="${e.deliverable_this_week || ""}" style="width:12em" ${dis} /></td>
+      <td><input type="number" class="f-hours" step="0.5" value="${e.actual_hours ?? ""}" style="width:4em" ${dis} /></td>
+      <td><select class="f-status" ${dis}>${statusOptionsHtml(e.status)}</select></td>
+      <td><input type="text" class="f-reason" value="${e.incomplete_reason || ""}" style="width:10em" ${dis} /></td>
+      <td><input type="text" class="f-rectify" value="${e.rectification_measures || ""}" style="width:10em" ${dis} /></td>
+      <td><select class="f-risk" ${dis}>${riskOptionsHtml(e.risk_level)}</select></td>
+      <td><input type="checkbox" class="f-highlight" ${e.highlight ? "checked" : ""} ${dis} /></td>
+      <td><button type="button" class="secondary f-delete" ${dis}>删除</button></td>
     `;
     const save = async () => {
       await updateWeeklyTaskEntry(e.id, {
@@ -155,11 +217,13 @@ async function init() {
   if (defaultWeek) {
     weekSelect.value = defaultWeek.id;
     targetWeek = defaultWeek;
+    renderLockUI();
     await loadSummary();
   }
 
   weekSelect.addEventListener("change", async () => {
     targetWeek = allWeeks.find((w) => w.id === Number(weekSelect.value));
+    renderLockUI();
     await loadSummary();
   });
 }

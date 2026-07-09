@@ -29,6 +29,8 @@ export const bulkUpsertMeetingWeeks = (rows) =>
     .upsert(rows, { onConflict: "natural_week_start", ignoreDuplicates: true })
     .select()
     .then(unwrap);
+export const updateMeetingWeekFields = (id, patch) =>
+  supabase.from("meeting_weeks").update(patch).eq("id", id).select().single().then(unwrap);
 
 // ---- task_number_registry ----
 // 分配一个新的一级编号，返回整条 registry 记录（.level1_number 就是拿到的编号）

@@ -11,6 +11,7 @@ import {
   createWeeklyTaskEntry,
   updateWeeklyTaskEntry,
   deleteWeeklyTaskEntry,
+  updateMeetingWeekFields,
 } from "./shared/db.js";
 import { SOURCE_LABEL, sourceIdOf, sourceColumnFor, buildLabelMap } from "./shared/taskLabels.js";
 
@@ -129,6 +130,59 @@ async function generateCandidatePool(week) {
   return filtered;
 }
 
+function isPlanLocked() {
+  return !!targetWeek?.plan_locked_at;
+}
+
+function renderLockUI() {
+  const lockBtn = document.getElementById("lock-btn");
+  const unlockBtn = document.getElementById("unlock-btn");
+  const unlockForm = document.getElementById("unlock-form");
+  const statusEl = document.getElementById("lock-status");
+  unlockForm.hidden = true;
+  if (!targetWeek) return;
+
+  const locked = isPlanLocked();
+  lockBtn.hidden = locked;
+  unlockBtn.hidden = !locked;
+
+  let text = locked ? `🔒 本周计划已锁定（${new Date(targetWeek.plan_locked_at).toLocaleString()}），编辑前需先解锁` : "";
+  if (targetWeek.plan_amendment_note) {
+    text += `${text ? " ｜ " : ""}⚠ 曾被订正：${targetWeek.plan_amendment_note}`;
+  }
+  statusEl.textContent = text;
+  statusEl.className = locked ? "status warn" : "status";
+}
+
+document.getElementById("lock-btn").addEventListener("click", async () => {
+  const updated = await updateMeetingWeekFields(targetWeek.id, { plan_locked_at: new Date().toISOString() });
+  Object.assign(targetWeek, updated);
+  renderLockUI();
+  await loadSavedPlan();
+});
+
+document.getElementById("unlock-btn").addEventListener("click", () => {
+  document.getElementById("unlock-form").hidden = false;
+});
+document.getElementById("unlock-cancel-btn").addEventListener("click", () => {
+  document.getElementById("unlock-form").hidden = true;
+});
+document.getElementById("unlock-confirm-btn").addEventListener("click", async () => {
+  const note = document.getElementById("unlock-note").value.trim();
+  if (!note) {
+    alert("请填写订正说明");
+    return;
+  }
+  const updated = await updateMeetingWeekFields(targetWeek.id, {
+    plan_locked_at: null,
+    plan_amendment_note: note,
+  });
+  Object.assign(targetWeek, updated);
+  document.getElementById("unlock-note").value = "";
+  renderLockUI();
+  await loadSavedPlan();
+});
+
 function moduleOptionsHtml(selectedId) {
   return (
     `<option value="">(未分类)</option>` +
@@ -175,6 +229,11 @@ document.getElementById("generate-candidates-btn").addEventListener("click", asy
   const weekId = Number(document.getElementById("week-select").value);
   targetWeek = allWeeks.find((w) => w.id === weekId);
   previousWeek = findPreviousWeek(targetWeek);
+  if (isPlanLocked()) {
+    resultEl.textContent = "本周计划已锁定，请先解锁再生成候选";
+    resultEl.className = "status warn";
+    return;
+  }
   resultEl.textContent = "生成中...";
   resultEl.className = "status";
   try {
@@ -190,6 +249,11 @@ document.getElementById("generate-candidates-btn").addEventListener("click", asy
 
 document.getElementById("add-selected-btn").addEventListener("click", async () => {
   const resultEl = document.getElementById("add-result");
+  if (isPlanLocked()) {
+    resultEl.textContent = "本周计划已锁定，请先解锁再加入";
+    resultEl.className = "status warn";
+    return;
+  }
   const rows = [...document.querySelectorAll("#candidates-tbody tr")];
   const toInsert = [];
   for (const tr of rows) {
@@ -239,27 +303,29 @@ async function loadSavedPlan() {
 
   const tbody = document.getElementById("plan-tbody");
   tbody.innerHTML = "";
+  const locked = isPlanLocked();
+  const dis = locked ? "disabled" : "";
   for (const e of entries) {
     const label = labelMap.get(`${e.source_type}:${sourceIdOf(e)}`) || "(未知任务)";
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${label}</td>
       <td>
-        <select class="f-category">
+        <select class="f-category" ${dis}>
           <option value="上周未完成" ${e.plan_category === "上周未完成" ? "selected" : ""}>上周未完成</option>
           <option value="本周新增" ${e.plan_category === "本周新增" ? "selected" : ""}>本周新增</option>
         </select>
       </td>
-      <td><select class="f-module">${moduleOptionsHtml(e.module_id)}</select></td>
-      <td><input type="text" class="f-owner" value="${e.owner || ""}" style="width:5em" /></td>
-      <td><input type="text" class="f-deliverable" value="${e.deliverable_this_week || ""}" style="width:12em" /></td>
-      <td><input type="number" class="f-hours" step="0.5" value="${e.planned_hours ?? ""}" style="width:4em" /></td>
-      <td><input type="date" class="f-start" value="${e.plan_start_date || ""}" /></td>
-      <td><input type="date" class="f-deadline" value="${e.execution_deadline || ""}" /></td>
-      <td><select class="f-priority">${priorityOptionsHtml(e.priority_quadrant)}</select></td>
-      <td><input type="text" class="f-resources" value="${e.resources_needed || ""}" style="width:8em" /></td>
-      <td><input type="checkbox" class="f-highlight" ${e.highlight ? "checked" : ""} /></td>
-      <td><button type="button" class="secondary f-delete">删除</button></td>
+      <td><select class="f-module" ${dis}>${moduleOptionsHtml(e.module_id)}</select></td>
+      <td><input type="text" class="f-owner" value="${e.owner || ""}" style="width:5em" ${dis} /></td>
+      <td><input type="text" class="f-deliverable" value="${e.deliverable_this_week || ""}" style="width:12em" ${dis} /></td>
+      <td><input type="number" class="f-hours" step="0.5" value="${e.planned_hours ?? ""}" style="width:4em" ${dis} /></td>
+      <td><input type="date" class="f-start" value="${e.plan_start_date || ""}" ${dis} /></td>
+      <td><input type="date" class="f-deadline" value="${e.execution_deadline || ""}" ${dis} /></td>
+      <td><select class="f-priority" ${dis}>${priorityOptionsHtml(e.priority_quadrant)}</select></td>
+      <td><input type="text" class="f-resources" value="${e.resources_needed || ""}" style="width:8em" ${dis} /></td>
+      <td><input type="checkbox" class="f-highlight" ${e.highlight ? "checked" : ""} ${dis} /></td>
+      <td><button type="button" class="secondary f-delete" ${dis}>删除</button></td>
     `;
     const save = async () => {
       await updateWeeklyTaskEntry(e.id, {
@@ -301,6 +367,7 @@ async function init() {
     weekSelect.value = defaultWeek.id;
     targetWeek = defaultWeek;
     previousWeek = findPreviousWeek(targetWeek);
+    renderLockUI();
     await loadSavedPlan();
   }
 
@@ -309,6 +376,7 @@ async function init() {
     previousWeek = findPreviousWeek(targetWeek);
     candidates = [];
     renderCandidates();
+    renderLockUI();
     await loadSavedPlan();
   });
 }

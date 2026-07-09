@@ -17,8 +17,16 @@
     <form id="week-form" class="inline-form">
       <select name="week_id" id="week-select"></select>
       <button type="button" id="generate-skeleton-btn">生成总结骨架</button>
+      <button type="button" id="lock-btn" class="secondary">锁定本周总结</button>
+      <button type="button" id="unlock-btn" class="secondary" hidden>解锁编辑</button>
     </form>
     <p id="skeleton-result" class="status"></p>
+    <p id="lock-status" class="status"></p>
+    <form id="unlock-form" class="inline-form" hidden>
+      <input type="text" id="unlock-note" placeholder="订正说明（本周总结已锁定，说明这次要改什么/为什么）" style="min-width:320px" required />
+      <button type="button" id="unlock-confirm-btn">确认解锁</button>
+      <button type="button" id="unlock-cancel-btn" class="secondary">取消</button>
+    </form>
   </section>
 
   <section>
