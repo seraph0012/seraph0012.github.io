@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>周报自动化系统 — 截止日期任务</title>
+  <link rel="stylesheet" href="./shared/style.css" />
+</head>
+<body>
+  <nav id="app-nav"></nav>
+
+  <h1>截止日期任务（类型B）</h1>
+  <p>有硬性deadline，按日期倒排节点。deadline不变，实际delay后由人工决定如何压缩/调整剩余节点，系统只按周粒度生成预警，不自动重排。</p>
+
+  <section>
+    <h2>新建项目</h2>
+    <form id="create-form" class="inline-form">
+      <input type="text" name="title" placeholder="项目名" required style="min-width:260px" />
+      <label>截止日期 <input type="date" name="deadline_date" required /></label>
+      <input type="text" name="target_deliverable" placeholder="最终目标交付物(可选)" />
+      <button type="submit">新建</button>
+    </form>
+    <p id="create-result" class="status"></p>
+  </section>
+
+  <section>
+    <h2>全部项目</h2>
+    <table>
+      <thead>
+        <tr><th>编号</th><th>项目名</th><th>截止日期</th><th>状态</th><th>预警</th><th></th></tr>
+      </thead>
+      <tbody id="projects-tbody"></tbody>
+    </table>
+  </section>
+
+  <script type="module" src="./deadline-projects.js"></script>
+</body>
+</html>
