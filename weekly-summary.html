@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>周报自动化系统 — 本周总结</title>
+  <link rel="stylesheet" href="./shared/style.css" />
+</head>
+<body>
+  <nav id="app-nav"></nav>
+
+  <h1>本周总结</h1>
+  <p>选择要总结的例会周，从该周已有的计划条目生成总结骨架，填写完成情况/实际用时/未完成原因等。</p>
+
+  <section>
+    <h2>目标例会周</h2>
+    <form id="week-form" class="inline-form">
+      <select name="week_id" id="week-select"></select>
+      <button type="button" id="generate-skeleton-btn">生成总结骨架</button>
+    </form>
+    <p id="skeleton-result" class="status"></p>
+  </section>
+
+  <section>
+    <h2>总结条目</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>任务</th>
+          <th>类别</th>
+          <th>模块</th>
+          <th>责任人</th>
+          <th>本周交付材料</th>
+          <th>实际用时</th>
+          <th>完成情况</th>
+          <th>未完成原因</th>
+          <th>整改措施</th>
+          <th>风险</th>
+          <th>重点</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="summary-tbody"></tbody>
+    </table>
+  </section>
+
+  <script type="module" src="./weekly-summary.js"></script>
+</body>
+</html>

@@ -1,0 +1,316 @@
+import { requireAuth } from "./shared/authGuard.js";
+import { renderNav } from "./shared/nav.js";
+import {
+  listModules,
+  listMeetingWeeks,
+  listQueueProjects,
+  listDeadlineProjects,
+  listRecurringInstancesForWeek,
+  listAdHocTasks,
+  listWeeklyTaskEntries,
+  createWeeklyTaskEntry,
+  updateWeeklyTaskEntry,
+  deleteWeeklyTaskEntry,
+} from "./shared/db.js";
+import { SOURCE_LABEL, sourceIdOf, sourceColumnFor, buildLabelMap } from "./shared/taskLabels.js";
+
+const session = await requireAuth();
+if (!session) {
+  throw new Error("not authenticated");
+}
+renderNav();
+
+const PRIORITY_OPTIONS = [
+  ["", "(未设置)"],
+  ["urgent_important", "紧急且重要"],
+  ["important_not_urgent", "重要不紧急"],
+  ["urgent_not_important", "紧急不重要"],
+  ["neither", "不紧急不重要"],
+];
+
+let allModules = [];
+let allWeeks = [];
+let targetWeek = null;
+let previousWeek = null;
+let candidates = [];
+
+function findPreviousWeek(week) {
+  const earlier = allWeeks.filter((w) => w.natural_week_start < week.natural_week_start);
+  if (earlier.length === 0) return null;
+  return earlier.reduce((a, b) => (a.natural_week_start > b.natural_week_start ? a : b));
+}
+
+async function computeCarryOverSet(prevWeek) {
+  if (!prevWeek) return new Set();
+  const prevSummary = await listWeeklyTaskEntries(prevWeek.id, "summary");
+  const set = new Set();
+  for (const e of prevSummary) {
+    if (e.status === "未完成") {
+      set.add(`${e.source_type}:${sourceIdOf(e)}`);
+    }
+  }
+  return set;
+}
+
+async function generateCandidatePool(week) {
+  const [queueProjects, deadlineProjects, recurringInstances, adHocTasks, existingPlan] = await Promise.all([
+    listQueueProjects(),
+    listDeadlineProjects(),
+    listRecurringInstancesForWeek(week.id),
+    listAdHocTasks(),
+    listWeeklyTaskEntries(week.id, "plan"),
+  ]);
+
+  const alreadyPlanned = new Set(existingPlan.map((e) => `${e.source_type}:${sourceIdOf(e)}`));
+  const carryOver = await computeCarryOverSet(previousWeek);
+
+  const raw = [];
+
+  for (const p of queueProjects) {
+    if (p.status !== "active" || !p.current_task_id) continue;
+    const task = p.queue_project_tasks.find((t) => t.id === p.current_task_id);
+    if (!task || task.status === "done") continue;
+    raw.push({
+      source_type: "queue_task",
+      source_id: task.id,
+      module_id: null,
+      owner: null,
+      deliverable_this_week: task.target_deliverable || "",
+      execution_deadline: null,
+    });
+  }
+
+  const weekEnd = new Date(week.natural_week_end);
+  for (const p of deadlineProjects) {
+    if (p.status !== "active") continue;
+    for (const m of p.deadline_milestones) {
+      if (m.status === "done" || m.status === "stopped") continue;
+      if (new Date(m.planned_date) > weekEnd) continue;
+      raw.push({
+        source_type: "milestone",
+        source_id: m.id,
+        module_id: null,
+        owner: null,
+        deliverable_this_week: m.target_deliverable || "",
+        execution_deadline: m.planned_date,
+      });
+    }
+  }
+
+  for (const inst of recurringInstances) {
+    raw.push({
+      source_type: "recurring_instance",
+      source_id: inst.id,
+      module_id: inst.recurring_task_templates.module_id,
+      owner: inst.recurring_task_templates.owner,
+      deliverable_this_week: inst.recurring_task_templates.deliverable_template || "",
+      execution_deadline: inst.due_date,
+    });
+  }
+
+  for (const t of adHocTasks) {
+    if (t.status !== "open" || t.promoted_to_type) continue;
+    raw.push({
+      source_type: "ad_hoc",
+      source_id: t.id,
+      module_id: null,
+      owner: null,
+      deliverable_this_week: "",
+      execution_deadline: null,
+    });
+  }
+
+  const filtered = raw.filter((c) => !alreadyPlanned.has(`${c.source_type}:${c.source_id}`));
+  const labelMap = await buildLabelMap(filtered);
+  for (const c of filtered) {
+    c.label = labelMap.get(`${c.source_type}:${c.source_id}`) || "(未知任务)";
+    c.plan_category = carryOver.has(`${c.source_type}:${c.source_id}`) ? "上周未完成" : "本周新增";
+  }
+  return filtered;
+}
+
+function moduleOptionsHtml(selectedId) {
+  return (
+    `<option value="">(未分类)</option>` +
+    allModules
+      .map((m) => `<option value="${m.id}" ${m.id === selectedId ? "selected" : ""}>${m.name}</option>`)
+      .join("")
+  );
+}
+
+function priorityOptionsHtml(selected) {
+  return PRIORITY_OPTIONS.map(
+    ([v, l]) => `<option value="${v}" ${v === (selected || "") ? "selected" : ""}>${l}</option>`
+  ).join("");
+}
+
+function renderCandidates() {
+  const section = document.getElementById("candidates-section");
+  const tbody = document.getElementById("candidates-tbody");
+  tbody.innerHTML = "";
+  section.hidden = candidates.length === 0;
+  candidates.forEach((c, idx) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td><input type="checkbox" class="f-check" checked /></td>
+      <td>${SOURCE_LABEL[c.source_type]}</td>
+      <td>${c.label}</td>
+      <td>${c.plan_category}</td>
+      <td><select class="f-module">${moduleOptionsHtml(c.module_id)}</select></td>
+      <td><input type="text" class="f-deliverable" value="${c.deliverable_this_week || ""}" style="width:14em" /></td>
+      <td><input type="number" class="f-hours" step="0.5" style="width:4em" /></td>
+      <td><select class="f-priority">${priorityOptionsHtml(null)}</select></td>
+    `;
+    tr.dataset.idx = idx;
+    tbody.appendChild(tr);
+  });
+}
+
+document.getElementById("check-all").addEventListener("change", (e) => {
+  document.querySelectorAll(".f-check").forEach((cb) => (cb.checked = e.target.checked));
+});
+
+document.getElementById("generate-candidates-btn").addEventListener("click", async () => {
+  const resultEl = document.getElementById("candidates-result");
+  const weekId = Number(document.getElementById("week-select").value);
+  targetWeek = allWeeks.find((w) => w.id === weekId);
+  previousWeek = findPreviousWeek(targetWeek);
+  resultEl.textContent = "生成中...";
+  resultEl.className = "status";
+  try {
+    candidates = await generateCandidatePool(targetWeek);
+    renderCandidates();
+    resultEl.textContent = candidates.length === 0 ? "没有新的候选任务（可能都已加入本周计划）" : `找到 ${candidates.length} 条候选`;
+    resultEl.className = "status ok";
+  } catch (err) {
+    resultEl.textContent = `失败：${err.message}`;
+    resultEl.className = "status error";
+  }
+});
+
+document.getElementById("add-selected-btn").addEventListener("click", async () => {
+  const resultEl = document.getElementById("add-result");
+  const rows = [...document.querySelectorAll("#candidates-tbody tr")];
+  const toInsert = [];
+  for (const tr of rows) {
+    if (!tr.querySelector(".f-check").checked) continue;
+    const c = candidates[Number(tr.dataset.idx)];
+    toInsert.push({
+      meeting_week_id: targetWeek.id,
+      appears_in: "plan",
+      source_type: c.source_type,
+      [sourceColumnFor(c.source_type)]: c.source_id,
+      module_id: tr.querySelector(".f-module").value || null,
+      plan_category: c.plan_category,
+      owner: c.owner || "刘璇",
+      deliverable_this_week: tr.querySelector(".f-deliverable").value || null,
+      planned_hours: tr.querySelector(".f-hours").value || null,
+      priority_quadrant: tr.querySelector(".f-priority").value || null,
+      execution_deadline: c.execution_deadline || null,
+    });
+  }
+  if (toInsert.length === 0) {
+    resultEl.textContent = "没有勾选任何候选";
+    resultEl.className = "status warn";
+    return;
+  }
+  resultEl.textContent = "写入中...";
+  resultEl.className = "status";
+  try {
+    for (const row of toInsert) {
+      await createWeeklyTaskEntry(row);
+    }
+    resultEl.textContent = `已加入 ${toInsert.length} 条`;
+    resultEl.className = "status ok";
+    candidates = await generateCandidatePool(targetWeek);
+    renderCandidates();
+    await loadSavedPlan();
+  } catch (err) {
+    resultEl.textContent = `失败：${err.message}`;
+    resultEl.className = "status error";
+  }
+});
+
+async function loadSavedPlan() {
+  if (!targetWeek) return;
+  const entries = await listWeeklyTaskEntries(targetWeek.id, "plan");
+  const labelItems = entries.map((e) => ({ source_type: e.source_type, source_id: sourceIdOf(e) }));
+  const labelMap = await buildLabelMap(labelItems);
+
+  const tbody = document.getElementById("plan-tbody");
+  tbody.innerHTML = "";
+  for (const e of entries) {
+    const label = labelMap.get(`${e.source_type}:${sourceIdOf(e)}`) || "(未知任务)";
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${label}</td>
+      <td>
+        <select class="f-category">
+          <option value="上周未完成" ${e.plan_category === "上周未完成" ? "selected" : ""}>上周未完成</option>
+          <option value="本周新增" ${e.plan_category === "本周新增" ? "selected" : ""}>本周新增</option>
+        </select>
+      </td>
+      <td><select class="f-module">${moduleOptionsHtml(e.module_id)}</select></td>
+      <td><input type="text" class="f-owner" value="${e.owner || ""}" style="width:5em" /></td>
+      <td><input type="text" class="f-deliverable" value="${e.deliverable_this_week || ""}" style="width:12em" /></td>
+      <td><input type="number" class="f-hours" step="0.5" value="${e.planned_hours ?? ""}" style="width:4em" /></td>
+      <td><input type="date" class="f-start" value="${e.plan_start_date || ""}" /></td>
+      <td><input type="date" class="f-deadline" value="${e.execution_deadline || ""}" /></td>
+      <td><select class="f-priority">${priorityOptionsHtml(e.priority_quadrant)}</select></td>
+      <td><input type="text" class="f-resources" value="${e.resources_needed || ""}" style="width:8em" /></td>
+      <td><input type="checkbox" class="f-highlight" ${e.highlight ? "checked" : ""} /></td>
+      <td><button type="button" class="secondary f-delete">删除</button></td>
+    `;
+    const save = async () => {
+      await updateWeeklyTaskEntry(e.id, {
+        plan_category: tr.querySelector(".f-category").value,
+        module_id: tr.querySelector(".f-module").value || null,
+        owner: tr.querySelector(".f-owner").value || null,
+        deliverable_this_week: tr.querySelector(".f-deliverable").value || null,
+        planned_hours: tr.querySelector(".f-hours").value || null,
+        plan_start_date: tr.querySelector(".f-start").value || null,
+        execution_deadline: tr.querySelector(".f-deadline").value || null,
+        priority_quadrant: tr.querySelector(".f-priority").value || null,
+        resources_needed: tr.querySelector(".f-resources").value || null,
+        highlight: tr.querySelector(".f-highlight").checked,
+      });
+    };
+    tr.querySelectorAll("select, input").forEach((el) => el.addEventListener("change", save));
+    tr.querySelector(".f-delete").addEventListener("click", async () => {
+      await deleteWeeklyTaskEntry(e.id);
+      await loadSavedPlan();
+    });
+    tbody.appendChild(tr);
+  }
+}
+
+async function init() {
+  [allModules, allWeeks] = await Promise.all([listModules(), listMeetingWeeks()]);
+
+  const weekSelect = document.getElementById("week-select");
+  const sorted = [...allWeeks].sort((a, b) => new Date(a.natural_week_start) - new Date(b.natural_week_start));
+  for (const w of sorted) {
+    const opt = document.createElement("option");
+    opt.value = w.id;
+    opt.textContent = `${w.natural_week_start} ~ ${w.natural_week_end}（例会${w.meeting_date}）`;
+    weekSelect.appendChild(opt);
+  }
+  const today = new Date();
+  const defaultWeek = sorted.find((w) => new Date(w.natural_week_start) > today) || sorted[sorted.length - 1];
+  if (defaultWeek) {
+    weekSelect.value = defaultWeek.id;
+    targetWeek = defaultWeek;
+    previousWeek = findPreviousWeek(targetWeek);
+    await loadSavedPlan();
+  }
+
+  weekSelect.addEventListener("change", async () => {
+    targetWeek = allWeeks.find((w) => w.id === Number(weekSelect.value));
+    previousWeek = findPreviousWeek(targetWeek);
+    candidates = [];
+    renderCandidates();
+    await loadSavedPlan();
+  });
+}
+
+await init();

@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>周报自动化系统 — 下周计划</title>
+  <link rel="stylesheet" href="./shared/style.css" />
+</head>
+<body>
+  <nav id="app-nav"></nav>
+
+  <h1>下周计划</h1>
+  <p>选择目标例会周，从四类任务里聚合候选任务，勾选、补充计划字段后批量写入本周计划。</p>
+
+  <section>
+    <h2>目标例会周</h2>
+    <form id="week-form" class="inline-form">
+      <select name="week_id" id="week-select"></select>
+      <button type="button" id="generate-candidates-btn">生成候选池</button>
+    </form>
+    <p id="candidates-result" class="status"></p>
+  </section>
+
+  <section id="candidates-section" hidden>
+    <h2>候选任务（勾选后加入计划）</h2>
+    <table>
+      <thead>
+        <tr>
+          <th><input type="checkbox" id="check-all" checked /></th>
+          <th>来源</th>
+          <th>任务</th>
+          <th>类别</th>
+          <th>模块</th>
+          <th>本周交付物</th>
+          <th>计划用时(h)</th>
+          <th>优先级</th>
+        </tr>
+      </thead>
+      <tbody id="candidates-tbody"></tbody>
+    </table>
+    <button type="button" id="add-selected-btn">加入本周计划</button>
+    <p id="add-result" class="status"></p>
+  </section>
+
+  <section>
+    <h2>本周计划（已保存）</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>任务</th>
+          <th>类别</th>
+          <th>模块</th>
+          <th>责任人</th>
+          <th>本周交付物</th>
+          <th>计划用时</th>
+          <th>计划开始</th>
+          <th>执行截止</th>
+          <th>优先级</th>
+          <th>需协调资源</th>
+          <th>重点</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="plan-tbody"></tbody>
+    </table>
+  </section>
+
+  <script type="module" src="./weekly-plan.js"></script>
+</body>
+</html>

@@ -144,6 +144,65 @@ export const addRecurringInstance = (templateId, instance) =>
 export const updateRecurringInstance = (id, patch) =>
   supabase.from("recurring_task_instances").update(patch).eq("id", id).select().single().then(unwrap);
 
+// ---- weekly_task_entries ----
+export const listWeeklyTaskEntries = (meetingWeekId, appearsIn) =>
+  supabase
+    .from("weekly_task_entries")
+    .select("*")
+    .eq("meeting_week_id", meetingWeekId)
+    .eq("appears_in", appearsIn)
+    .order("id")
+    .then(unwrap);
+export const createWeeklyTaskEntry = (row) =>
+  supabase.from("weekly_task_entries").insert(row).select().single().then(unwrap);
+export const updateWeeklyTaskEntry = (id, patch) =>
+  supabase
+    .from("weekly_task_entries")
+    .update({ ...patch, updated_at: new Date().toISOString() })
+    .eq("id", id)
+    .select()
+    .single()
+    .then(unwrap);
+export const deleteWeeklyTaskEntry = (id) =>
+  supabase.from("weekly_task_entries").delete().eq("id", id).then(unwrap);
+
+export const listRecurringInstancesForWeek = (weekId) =>
+  supabase
+    .from("recurring_task_instances")
+    .select("*, recurring_task_templates(*)")
+    .eq("meeting_week_id", weekId)
+    .then(unwrap);
+
+// ---- 按id批量反查任务标题，供weekly-plan/weekly-summary渲染候选池和已保存条目的任务名 ----
+export const listQueueProjectTasksByIds = (ids) =>
+  ids.length === 0
+    ? Promise.resolve([])
+    : supabase
+        .from("queue_project_tasks")
+        .select("id, title, wbs_level2_number, wbs_level3_number, target_deliverable, queue_projects(title, level1_number)")
+        .in("id", ids)
+        .then(unwrap);
+export const listMilestonesByIds = (ids) =>
+  ids.length === 0
+    ? Promise.resolve([])
+    : supabase
+        .from("deadline_milestones")
+        .select("id, title, wbs_level2_number, wbs_level3_number, target_deliverable, deadline_projects(title, level1_number)")
+        .in("id", ids)
+        .then(unwrap);
+export const listRecurringInstancesByIds = (ids) =>
+  ids.length === 0
+    ? Promise.resolve([])
+    : supabase
+        .from("recurring_task_instances")
+        .select("id, full_number, due_date, recurring_task_templates(title, module_id, owner, deliverable_template)")
+        .in("id", ids)
+        .then(unwrap);
+export const listAdHocTasksByIds = (ids) =>
+  ids.length === 0
+    ? Promise.resolve([])
+    : supabase.from("ad_hoc_tasks").select("id, title").in("id", ids).then(unwrap);
+
 // ---- ad_hoc_tasks (类型D) ----
 export const listAdHocTasks = () =>
   supabase.from("ad_hoc_tasks").select("*").order("actual_start", { ascending: false }).then(unwrap);
