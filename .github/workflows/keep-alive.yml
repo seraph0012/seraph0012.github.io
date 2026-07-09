@@ -1,0 +1,16 @@
+name: Keep Supabase project alive
+
+on:
+  schedule:
+    # 每3天一次，防止Supabase免费层因7天无活动自动暂停项目
+    - cron: "0 3 */3 * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase REST endpoint
+        run: |
+          curl -sf "https://tbmrdgyyjafoldggtxtb.supabase.co/rest/v1/connection_test?select=id&limit=1" \
+            -H "apikey: sb_publishable_xwMx51W9aNry5-bSmtjK2Q_homqfKjY"
