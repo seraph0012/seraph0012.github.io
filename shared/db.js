@@ -52,13 +52,13 @@ export const setTaskNumberOwner = (level1Number, owningId) =>
 export const listQueueProjects = () =>
   supabase
     .from("queue_projects")
-    .select("*, queue_project_tasks(*)")
+    .select("*, queue_project_tasks!queue_project_tasks_project_id_fkey(*)")
     .order("level1_number")
     .then(unwrap);
 export const getQueueProject = (id) =>
   supabase
     .from("queue_projects")
-    .select("*, queue_project_tasks(*)")
+    .select("*, queue_project_tasks!queue_project_tasks_project_id_fkey(*)")
     .eq("id", id)
     .single()
     .then(unwrap);
