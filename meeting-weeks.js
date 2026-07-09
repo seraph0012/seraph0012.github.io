@@ -1,6 +1,12 @@
 import { requireAuth } from "./shared/authGuard.js";
 import { renderNav } from "./shared/nav.js";
-import { listMeetingWeeks, bulkUpsertMeetingWeeks, upsertMeetingWeek, deleteMeetingWeek } from "./shared/db.js";
+import {
+  listMeetingWeeks,
+  bulkUpsertMeetingWeeks,
+  upsertMeetingWeek,
+  updateMeetingWeekFields,
+  deleteMeetingWeek,
+} from "./shared/db.js";
 import { weekdayLabel } from "./shared/dateUtils.js";
 
 const session = await requireAuth();
@@ -52,11 +58,47 @@ function generateYearRows(year) {
   return rows;
 }
 
+// calendar_month/week_index_in_month完全由meeting_date+is_normal推出来，不应该手动填：
+// 按meeting_date所在自然月分组，月内按natural_week_start顺序编号，跳过(is_normal=false)的周
+// 不占号、不计入计数（顺延递补，不留空号——跟循环任务的编号规则是同一套逻辑）。
+function recomputeMonthIndices(rows) {
+  const sorted = [...rows].sort((a, b) => new Date(a.natural_week_start) - new Date(b.natural_week_start));
+  const counters = {};
+  return sorted.map((row) => {
+    const monthKey = row.meeting_date.slice(0, 7);
+    const calendar_month = `${monthKey}-01`;
+    let week_index_in_month = 0;
+    if (row.is_normal !== false) {
+      counters[monthKey] = (counters[monthKey] || 0) + 1;
+      week_index_in_month = counters[monthKey];
+    }
+    return { ...row, calendar_month, week_index_in_month };
+  });
+}
+
 async function loadTable() {
   const rows = await listMeetingWeeks();
+  const recomputed = recomputeMonthIndices(rows);
+
+  // 跟数据库里存的值不一致就同步回去（比如刚改了meeting_date/is_normal，导致后面几周顺延）
+  const toSync = recomputed.filter((row) => {
+    const original = rows.find((r) => r.id === row.id);
+    return original.calendar_month !== row.calendar_month || original.week_index_in_month !== row.week_index_in_month;
+  });
+  if (toSync.length > 0) {
+    await Promise.all(
+      toSync.map((row) =>
+        updateMeetingWeekFields(row.id, {
+          calendar_month: row.calendar_month,
+          week_index_in_month: row.week_index_in_month,
+        })
+      )
+    );
+  }
+
   const tbody = document.getElementById("weeks-tbody");
   tbody.innerHTML = "";
-  for (const row of rows) {
+  for (const row of recomputed) {
     tbody.appendChild(renderRow(row));
   }
 }
@@ -74,7 +116,7 @@ function renderRow(row) {
       <span class="f-work-week-end-weekday badge">${weekdayLabel(row.work_week_end)}</span>
     </td>
     <td>${row.calendar_month.slice(0, 7)}</td>
-    <td><input type="number" class="f-week-index" value="${row.week_index_in_month}" min="1" style="width:4em" /></td>
+    <td>${row.is_normal === false ? "—" : `第${row.week_index_in_month}周`}</td>
     <td><input type="checkbox" class="f-is-normal" ${row.is_normal ? "checked" : ""} /></td>
     <td><input type="text" class="f-notes" value="${row.notes ?? ""}" placeholder="节假日调休说明等" /></td>
     <td><button type="button" class="secondary f-save">保存</button></td>
@@ -91,12 +133,12 @@ function renderRow(row) {
       natural_week_start: row.natural_week_start,
       meeting_date: tr.querySelector(".f-meeting-date").value,
       work_week_end: tr.querySelector(".f-work-week-end").value || null,
-      calendar_month: row.calendar_month,
-      week_index_in_month: Number(tr.querySelector(".f-week-index").value),
       is_normal: tr.querySelector(".f-is-normal").checked,
       notes: tr.querySelector(".f-notes").value || null,
     };
     await upsertMeetingWeek(patch);
+    // meeting_date/is_normal可能变了，归属月份/月内第几周要跟着重算，顺便可能影响本月后面几周
+    await loadTable();
   });
   tr.querySelector(".f-delete").addEventListener("click", async () => {
     if (!confirm(`确定删除 ${row.natural_week_start} 这一整周？如果已经有循环任务实例/周计划引用了这一周会删除失败。`)) return;
