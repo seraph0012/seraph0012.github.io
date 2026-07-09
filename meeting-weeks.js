@@ -118,7 +118,6 @@ function renderRow(row) {
     <td>${row.is_normal === false ? "—" : `第${row.week_index_in_month}周`}</td>
     <td><input type="checkbox" class="f-is-normal" ${row.is_normal ? "checked" : ""} /></td>
     <td><input type="text" class="f-notes" value="${row.notes ?? ""}" placeholder="节假日调休说明等" /></td>
-    <td><button type="button" class="secondary f-save">保存</button></td>
     <td><button type="button" class="secondary f-delete">删除</button></td>
   `;
   tr.querySelector(".f-meeting-date").addEventListener("input", (e) => {
@@ -127,7 +126,8 @@ function renderRow(row) {
   tr.querySelector(".f-work-week-end").addEventListener("input", (e) => {
     tr.querySelector(".f-work-week-end-weekday").textContent = weekdayLabel(e.target.value);
   });
-  tr.querySelector(".f-save").addEventListener("click", async () => {
+  // 改哪个字段都自动保存整行，不用单独点保存按钮——跟其他页面（weekly-plan等）的编辑体验一致
+  const save = async () => {
     // 用针对id的部分UPDATE，不能用upsert——upsert底层是"INSERT ... ON CONFLICT DO UPDATE"，
     // 即使最终落到UPDATE分支，Postgres仍会先按payload缺的列去校验NOT NULL（会拿calendar_month
     // 这种没传的列去插NULL探测冲突），漏了calendar_month/week_index_in_month就会报not-null violation。
@@ -144,7 +144,11 @@ function renderRow(row) {
     } catch (err) {
       alert(`保存失败：${err.message}`);
     }
-  });
+  };
+  tr.querySelector(".f-meeting-date").addEventListener("change", save);
+  tr.querySelector(".f-work-week-end").addEventListener("change", save);
+  tr.querySelector(".f-is-normal").addEventListener("change", save);
+  tr.querySelector(".f-notes").addEventListener("change", save);
   tr.querySelector(".f-delete").addEventListener("click", async () => {
     if (!confirm(`确定删除 ${row.natural_week_start} 这一整周？如果已经有循环任务实例/周计划引用了这一周会删除失败。`)) return;
     try {
