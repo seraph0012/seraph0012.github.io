@@ -3,41 +3,35 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>周报自动化系统 — Supabase 连接测试</title>
-  <style>
-    body { font-family: system-ui, -apple-system, "Microsoft YaHei", sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; color: #222; }
-    section { margin-bottom: 32px; padding: 16px; border: 1px solid #ddd; border-radius: 8px; }
-    h2 { margin-top: 0; font-size: 16px; }
-    button { padding: 6px 14px; cursor: pointer; }
-    input[type="email"] { padding: 6px; width: 220px; }
-    .status { margin-top: 10px; padding: 8px; border-radius: 4px; font-size: 14px; word-break: break-all; }
-    .status.ok { background: #e6f4ea; color: #1e7e34; }
-    .status.warn { background: #fff8e1; color: #8a6d00; }
-    .status.error { background: #fdecea; color: #b3261e; }
-  </style>
+  <title>周报自动化系统</title>
+  <link rel="stylesheet" href="./shared/style.css" />
 </head>
 <body>
-  <h1>Supabase 连接测试</h1>
-  <p id="config-status" class="status warn">加载中...</p>
+  <nav id="app-nav"></nav>
+
+  <h1>周报自动化系统</h1>
 
   <section>
-    <h2>1. 数据库连接测试</h2>
-    <p>需要先在 Supabase SQL Editor 里建好 <code>connection_test</code> 表（见配置指南）。</p>
-    <button id="db-test-btn">测试数据库连接</button>
-    <p id="db-result" class="status"></p>
+    <h2>快捷入口</h2>
+    <p><a href="weekly-plan.html">→ 生成/编辑下周计划</a></p>
+    <p><a href="weekly-summary.html">→ 编辑本周总结</a></p>
   </section>
 
   <section>
-    <h2>2. 登录状态（Auth 魔法链接）</h2>
-    <p id="auth-status" class="status"></p>
-    <form id="magic-link-form">
-      <input type="email" name="email" placeholder="你的邮箱" required />
-      <button type="submit">发送登录链接</button>
-    </form>
-    <p id="magic-link-result" class="status"></p>
-    <button id="sign-out-btn" hidden>退出登录</button>
+    <h2>任务管理</h2>
+    <p><a href="queue-projects.html">顺序队列任务（类型A）</a></p>
+    <p><a href="deadline-projects.html">截止日期任务（类型B）</a></p>
+    <p><a href="recurring-tasks.html">循环任务（类型C）</a></p>
+    <p><a href="ad-hoc-tasks.html">计划外任务（类型D）</a></p>
   </section>
 
-  <script type="module" src="./app.js"></script>
+  <section>
+    <h2>基础数据</h2>
+    <p><a href="meeting-weeks.html">例会日历</a></p>
+    <p><a href="modules.html">模块管理</a></p>
+    <p><a href="diagnostics.html">Supabase 连接诊断</a></p>
+  </section>
+
+  <script type="module" src="./index.js"></script>
 </body>
 </html>

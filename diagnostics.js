@@ -1,7 +1,5 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { supabase } from "./shared/supabaseClient.js";
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./config.js";
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const configStatusEl = document.getElementById("config-status");
 const dbResultEl = document.getElementById("db-result");

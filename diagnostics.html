@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>周报自动化系统 — Supabase 连接诊断</title>
+  <link rel="stylesheet" href="./shared/style.css" />
+</head>
+<body>
+  <h1>Supabase 连接诊断</h1>
+  <p id="config-status" class="status warn">加载中...</p>
+
+  <section>
+    <h2>数据库连接测试</h2>
+    <button id="db-test-btn">测试数据库连接</button>
+    <p id="db-result" class="status"></p>
+  </section>
+
+  <section>
+    <h2>登录状态（Auth 魔法链接）</h2>
+    <p id="auth-status" class="status"></p>
+    <form id="magic-link-form" class="inline-form">
+      <input type="email" name="email" placeholder="你的邮箱" required />
+      <button type="submit">发送登录链接</button>
+    </form>
+    <p id="magic-link-result" class="status"></p>
+    <button id="sign-out-btn" class="secondary" hidden>退出登录</button>
+  </section>
+
+  <script type="module" src="./diagnostics.js"></script>
+</body>
+</html>

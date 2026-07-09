@@ -1,0 +1,84 @@
+body {
+  font-family: system-ui, -apple-system, "Microsoft YaHei", sans-serif;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 0 16px 40px;
+  color: #222;
+}
+
+h1 { font-size: 22px; margin: 24px 0 16px; }
+h2 { font-size: 16px; }
+
+nav#app-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  padding: 12px 0;
+  border-bottom: 1px solid #ddd;
+  margin-bottom: 24px;
+}
+nav#app-nav a {
+  padding: 6px 10px;
+  border-radius: 4px;
+  text-decoration: none;
+  color: #333;
+  font-size: 14px;
+}
+nav#app-nav a.active { background: #222; color: #fff; }
+nav#app-nav a:not(.active):hover { background: #eee; }
+nav#app-nav .nav-sign-out {
+  margin-left: auto;
+  font-size: 13px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+section {
+  margin-bottom: 32px;
+  padding: 16px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+}
+
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eee; vertical-align: top; }
+th { color: #555; font-weight: 600; }
+
+form.inline-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+input, select, textarea {
+  padding: 6px 8px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 14px;
+}
+textarea { width: 100%; min-height: 60px; }
+button {
+  padding: 6px 14px;
+  border: 1px solid #333;
+  border-radius: 4px;
+  background: #222;
+  color: #fff;
+  cursor: pointer;
+  font-size: 14px;
+}
+button.secondary { background: #fff; color: #222; }
+button:hover { opacity: 0.85; }
+
+.status { margin-top: 10px; padding: 8px; border-radius: 4px; font-size: 14px; word-break: break-all; }
+.status.ok { background: #e6f4ea; color: #1e7e34; }
+.status.warn { background: #fff8e1; color: #8a6d00; }
+.status.error { background: #fdecea; color: #b3261e; }
+
+.badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
+.badge.risk-green { background: #e6f4ea; color: #1e7e34; }
+.badge.risk-yellow { background: #fff8e1; color: #8a6d00; }
+.badge.risk-red { background: #fdecea; color: #b3261e; }
+
+.login-gate {
+  max-width: 360px;
+  margin: 80px auto;
+  text-align: center;
+}
+.login-gate form { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
