@@ -23,7 +23,9 @@ let selectedTemplateId = Number(new URLSearchParams(window.location.search).get(
 
 async function populateLookups() {
   const [modules, weeks] = await Promise.all([listModules(), listMeetingWeeks()]);
-  allMeetingWeeks = weeks;
+  // 没开例会的整周（比如春节假期，在meeting-weeks.html里取消勾选"正常"）不参与
+  // 起始周选择/顺延递补编号计算——保留在日历里，只是不算作可用的例会周
+  allMeetingWeeks = weeks.filter((w) => w.is_normal !== false);
 
   const moduleSelect = document.querySelector('select[name="module_id"]');
   for (const m of modules) {

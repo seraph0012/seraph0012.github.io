@@ -351,7 +351,10 @@ async function loadSavedPlan() {
 }
 
 async function init() {
-  [allModules, allWeeks] = await Promise.all([listModules(), listMeetingWeeks()]);
+  const [modules, weeks] = await Promise.all([listModules(), listMeetingWeeks()]);
+  allModules = modules;
+  // 没开例会的整周（春节假期等，在meeting-weeks.html取消勾选"正常"）不参与本周计划的周选择
+  allWeeks = weeks.filter((w) => w.is_normal !== false);
 
   const weekSelect = document.getElementById("week-select");
   const sorted = [...allWeeks].sort((a, b) => new Date(a.natural_week_start) - new Date(b.natural_week_start));

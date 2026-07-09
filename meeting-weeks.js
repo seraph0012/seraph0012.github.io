@@ -1,6 +1,6 @@
 import { requireAuth } from "./shared/authGuard.js";
 import { renderNav } from "./shared/nav.js";
-import { listMeetingWeeks, bulkUpsertMeetingWeeks, upsertMeetingWeek } from "./shared/db.js";
+import { listMeetingWeeks, bulkUpsertMeetingWeeks, upsertMeetingWeek, deleteMeetingWeek } from "./shared/db.js";
 
 const session = await requireAuth();
 if (!session) {
@@ -65,6 +65,7 @@ function renderRow(row) {
     <td><input type="checkbox" class="f-is-normal" ${row.is_normal ? "checked" : ""} /></td>
     <td><input type="text" class="f-notes" value="${row.notes ?? ""}" placeholder="节假日调休说明等" /></td>
     <td><button type="button" class="secondary f-save">保存</button></td>
+    <td><button type="button" class="secondary f-delete">删除</button></td>
   `;
   tr.querySelector(".f-save").addEventListener("click", async () => {
     const patch = {
@@ -76,6 +77,15 @@ function renderRow(row) {
       notes: tr.querySelector(".f-notes").value || null,
     };
     await upsertMeetingWeek(patch);
+  });
+  tr.querySelector(".f-delete").addEventListener("click", async () => {
+    if (!confirm(`确定删除 ${row.natural_week_start} 这一整周？如果已经有循环任务实例/周计划引用了这一周会删除失败。`)) return;
+    try {
+      await deleteMeetingWeek(row.id);
+      await loadTable();
+    } catch (err) {
+      alert(`删除失败：${err.message}\n\n如果只是整周没开例会（比如春节假期），更推荐取消勾选"正常"而不是删除——取消勾选后，下周计划/循环任务实例生成会自动跳过这一周，同时还保留这周在日历里方便查看，删除则会把这一整周从日历里抹掉。`);
+    }
   });
   return tr;
 }
