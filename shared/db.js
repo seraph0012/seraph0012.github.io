@@ -178,7 +178,9 @@ export const listQueueProjectTasksByIds = (ids) =>
     ? Promise.resolve([])
     : supabase
         .from("queue_project_tasks")
-        .select("id, title, wbs_level2_number, wbs_level3_number, target_deliverable, queue_projects(title, level1_number)")
+        .select(
+          "id, title, wbs_level2_number, wbs_level3_number, target_deliverable, queue_projects!queue_project_tasks_project_id_fkey(title, level1_number)"
+        )
         .in("id", ids)
         .then(unwrap);
 export const listMilestonesByIds = (ids) =>
