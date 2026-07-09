@@ -16,13 +16,6 @@ export const deleteModule = (id) =>
 // ---- meeting_weeks ----
 export const listMeetingWeeks = () =>
   supabase.from("meeting_weeks").select("*").order("natural_week_start").then(unwrap);
-export const upsertMeetingWeek = (row) =>
-  supabase
-    .from("meeting_weeks")
-    .upsert(row, { onConflict: "natural_week_start" })
-    .select()
-    .single()
-    .then(unwrap);
 export const bulkUpsertMeetingWeeks = (rows) =>
   supabase
     .from("meeting_weeks")

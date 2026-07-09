@@ -3,7 +3,6 @@ import { renderNav } from "./shared/nav.js";
 import {
   listMeetingWeeks,
   bulkUpsertMeetingWeeks,
-  upsertMeetingWeek,
   updateMeetingWeekFields,
   deleteMeetingWeek,
 } from "./shared/db.js";
@@ -129,15 +128,17 @@ function renderRow(row) {
     tr.querySelector(".f-work-week-end-weekday").textContent = weekdayLabel(e.target.value);
   });
   tr.querySelector(".f-save").addEventListener("click", async () => {
+    // 用针对id的部分UPDATE，不能用upsert——upsert底层是"INSERT ... ON CONFLICT DO UPDATE"，
+    // 即使最终落到UPDATE分支，Postgres仍会先按payload缺的列去校验NOT NULL（会拿calendar_month
+    // 这种没传的列去插NULL探测冲突），漏了calendar_month/week_index_in_month就会报not-null violation。
     const patch = {
-      natural_week_start: row.natural_week_start,
       meeting_date: tr.querySelector(".f-meeting-date").value,
       work_week_end: tr.querySelector(".f-work-week-end").value || null,
       is_normal: tr.querySelector(".f-is-normal").checked,
       notes: tr.querySelector(".f-notes").value || null,
     };
     try {
-      await upsertMeetingWeek(patch);
+      await updateMeetingWeekFields(row.id, patch);
       // meeting_date/is_normal可能变了，归属月份/月内第几周要跟着重算，顺便可能影响本月后面几周
       await loadTable();
     } catch (err) {
