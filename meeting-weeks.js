@@ -1,6 +1,7 @@
 import { requireAuth } from "./shared/authGuard.js";
 import { renderNav } from "./shared/nav.js";
 import { listMeetingWeeks, bulkUpsertMeetingWeeks, upsertMeetingWeek, deleteMeetingWeek } from "./shared/db.js";
+import { weekdayLabel } from "./shared/dateUtils.js";
 
 const session = await requireAuth();
 if (!session) {
@@ -25,6 +26,10 @@ function generateYearRows(year) {
     const meetingDate = new Date(
       Date.UTC(weekStart.getUTCFullYear(), weekStart.getUTCMonth(), weekStart.getUTCDate() + 1)
     );
+    // 默认本周最后一个工作日=周五(自然周日起+5)，节假日可在下表手动改
+    const workWeekEnd = new Date(
+      Date.UTC(weekStart.getUTCFullYear(), weekStart.getUTCMonth(), weekStart.getUTCDate() + 5)
+    );
 
     if (meetingDate.getUTCFullYear() === year) {
       const monthKey = meetingDate.getUTCMonth();
@@ -32,6 +37,7 @@ function generateYearRows(year) {
       rows.push({
         natural_week_start: toISODate(weekStart),
         meeting_date: toISODate(meetingDate),
+        work_week_end: toISODate(workWeekEnd),
         calendar_month: toISODate(new Date(Date.UTC(year, monthKey, 1))),
         week_index_in_month: monthCounters[monthKey],
         is_normal: true,
@@ -59,7 +65,14 @@ function renderRow(row) {
   const tr = document.createElement("tr");
   tr.innerHTML = `
     <td>${row.natural_week_start}</td>
-    <td><input type="date" class="f-meeting-date" value="${row.meeting_date}" /></td>
+    <td>
+      <input type="date" class="f-meeting-date" value="${row.meeting_date}" />
+      <span class="f-meeting-date-weekday badge">${weekdayLabel(row.meeting_date)}</span>
+    </td>
+    <td>
+      <input type="date" class="f-work-week-end" value="${row.work_week_end ?? ""}" />
+      <span class="f-work-week-end-weekday badge">${weekdayLabel(row.work_week_end)}</span>
+    </td>
     <td>${row.calendar_month.slice(0, 7)}</td>
     <td><input type="number" class="f-week-index" value="${row.week_index_in_month}" min="1" style="width:4em" /></td>
     <td><input type="checkbox" class="f-is-normal" ${row.is_normal ? "checked" : ""} /></td>
@@ -67,10 +80,17 @@ function renderRow(row) {
     <td><button type="button" class="secondary f-save">保存</button></td>
     <td><button type="button" class="secondary f-delete">删除</button></td>
   `;
+  tr.querySelector(".f-meeting-date").addEventListener("input", (e) => {
+    tr.querySelector(".f-meeting-date-weekday").textContent = weekdayLabel(e.target.value);
+  });
+  tr.querySelector(".f-work-week-end").addEventListener("input", (e) => {
+    tr.querySelector(".f-work-week-end-weekday").textContent = weekdayLabel(e.target.value);
+  });
   tr.querySelector(".f-save").addEventListener("click", async () => {
     const patch = {
       natural_week_start: row.natural_week_start,
       meeting_date: tr.querySelector(".f-meeting-date").value,
+      work_week_end: tr.querySelector(".f-work-week-end").value || null,
       calendar_month: row.calendar_month,
       week_index_in_month: Number(tr.querySelector(".f-week-index").value),
       is_normal: tr.querySelector(".f-is-normal").checked,

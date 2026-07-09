@@ -14,6 +14,7 @@ import {
   updateMeetingWeekFields,
 } from "./shared/db.js";
 import { SOURCE_LABEL, sourceIdOf, sourceColumnFor, buildLabelMap } from "./shared/taskLabels.js";
+import { dateWithWeekday } from "./shared/dateUtils.js";
 
 const session = await requireAuth();
 if (!session) {
@@ -128,6 +129,15 @@ async function generateCandidatePool(week) {
     c.plan_category = carryOver.has(`${c.source_type}:${c.source_id}`) ? "上周未完成" : "本周新增";
   }
   return filtered;
+}
+
+function renderWeekRangeHint() {
+  const el = document.getElementById("week-range-hint");
+  if (!targetWeek) {
+    el.textContent = "";
+    return;
+  }
+  el.textContent = `本周工作日范围：${dateWithWeekday(targetWeek.meeting_date)} ~ ${dateWithWeekday(targetWeek.work_week_end)} —— 填"计划开始"/"执行截止"时不要选到这个范围之外（节假日）`;
 }
 
 function isPlanLocked() {
@@ -320,8 +330,8 @@ async function loadSavedPlan() {
       <td><input type="text" class="f-owner" value="${e.owner || ""}" style="width:5em" ${dis} /></td>
       <td><input type="text" class="f-deliverable" value="${e.deliverable_this_week || ""}" style="width:12em" ${dis} /></td>
       <td><input type="number" class="f-hours" step="0.5" value="${e.planned_hours ?? ""}" style="width:4em" ${dis} /></td>
-      <td><input type="date" class="f-start" value="${e.plan_start_date || ""}" ${dis} /></td>
-      <td><input type="date" class="f-deadline" value="${e.execution_deadline || ""}" ${dis} /></td>
+      <td><input type="date" class="f-start" value="${e.plan_start_date || ""}" min="${targetWeek.meeting_date}" max="${targetWeek.work_week_end || ""}" ${dis} /></td>
+      <td><input type="date" class="f-deadline" value="${e.execution_deadline || ""}" min="${targetWeek.meeting_date}" max="${targetWeek.work_week_end || ""}" ${dis} /></td>
       <td><select class="f-priority" ${dis}>${priorityOptionsHtml(e.priority_quadrant)}</select></td>
       <td><input type="text" class="f-resources" value="${e.resources_needed || ""}" style="width:8em" ${dis} /></td>
       <td><input type="checkbox" class="f-highlight" ${e.highlight ? "checked" : ""} ${dis} /></td>
@@ -371,6 +381,7 @@ async function init() {
     targetWeek = defaultWeek;
     previousWeek = findPreviousWeek(targetWeek);
     renderLockUI();
+    renderWeekRangeHint();
     await loadSavedPlan();
   }
 
@@ -380,6 +391,7 @@ async function init() {
     candidates = [];
     renderCandidates();
     renderLockUI();
+    renderWeekRangeHint();
     await loadSavedPlan();
   });
 }
