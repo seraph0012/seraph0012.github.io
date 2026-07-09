@@ -17,7 +17,18 @@ export const deleteModule = (id) =>
 export const listMeetingWeeks = () =>
   supabase.from("meeting_weeks").select("*").order("natural_week_start").then(unwrap);
 export const upsertMeetingWeek = (row) =>
-  supabase.from("meeting_weeks").upsert(row).select().single().then(unwrap);
+  supabase
+    .from("meeting_weeks")
+    .upsert(row, { onConflict: "natural_week_start" })
+    .select()
+    .single()
+    .then(unwrap);
+export const bulkUpsertMeetingWeeks = (rows) =>
+  supabase
+    .from("meeting_weeks")
+    .upsert(rows, { onConflict: "natural_week_start", ignoreDuplicates: true })
+    .select()
+    .then(unwrap);
 
 // ---- task_number_registry ----
 // 分配一个新的一级编号，返回整条 registry 记录（.level1_number 就是拿到的编号）
@@ -27,6 +38,12 @@ export const claimTaskNumber = ({ task_type, title_snapshot, owning_table, ownin
     .insert({ task_type, title_snapshot, owning_table, owning_id })
     .select()
     .single()
+    .then(unwrap);
+export const setTaskNumberOwner = (level1Number, owningId) =>
+  supabase
+    .from("task_number_registry")
+    .update({ owning_id: owningId })
+    .eq("level1_number", level1Number)
     .then(unwrap);
 
 // ---- queue_projects (类型A) ----

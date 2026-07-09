@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>周报自动化系统 — 例会日历</title>
+  <link rel="stylesheet" href="./shared/style.css" />
+</head>
+<body>
+  <nav id="app-nav"></nav>
+
+  <h1>例会日历（meeting_weeks）</h1>
+  <p>一个自然周 = 周日到周六。默认每周一为例会日，节假日调休导致例会顺延/跳过时，请在下表中手动订正 <code>meeting_date</code> 并取消勾选"正常"。</p>
+
+  <section>
+    <h2>预生成全年</h2>
+    <form id="generate-form" class="inline-form">
+      <label>年份 <input type="number" name="year" value="2026" min="2020" max="2100" required /></label>
+      <button type="submit">预生成该年全部自然周</button>
+    </form>
+    <p id="generate-result" class="status"></p>
+  </section>
+
+  <section>
+    <h2>全部记录</h2>
+    <table id="weeks-table">
+      <thead>
+        <tr>
+          <th>自然周(周日起)</th>
+          <th>例会日期</th>
+          <th>归属月份</th>
+          <th>月内第几周</th>
+          <th>正常</th>
+          <th>备注</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="weeks-tbody"></tbody>
+    </table>
+  </section>
+
+  <script type="module" src="./meeting-weeks.js"></script>
+</body>
+</html>
