@@ -3,6 +3,7 @@ import { renderNav } from "./shared/nav.js";
 import {
   listQueueProjects,
   createQueueProject,
+  deleteQueueProject,
   claimTaskNumber,
   setTaskNumberOwner,
 } from "./shared/db.js";
@@ -27,7 +28,17 @@ async function loadTable() {
       <td>${p.status}</td>
       <td>${current ? current.title : "（未设置指针）"}</td>
       <td><a href="queue-project-detail.html?id=${p.id}">详情</a></td>
+      <td><button type="button" class="secondary f-delete">删除</button></td>
     `;
+    tr.querySelector(".f-delete").addEventListener("click", async () => {
+      if (!confirm(`确定删除项目"${p.title}"？子任务会一并删除，此操作不可撤销。`)) return;
+      try {
+        await deleteQueueProject(p.id);
+        await loadTable();
+      } catch (err) {
+        alert(`删除失败：${err.message}`);
+      }
+    });
     tbody.appendChild(tr);
   }
 }

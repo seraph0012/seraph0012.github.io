@@ -72,6 +72,8 @@ export const updateQueueProject = (id, patch) =>
     .select()
     .single()
     .then(unwrap);
+export const deleteQueueProject = (id) =>
+  supabase.from("queue_projects").delete().eq("id", id).then(unwrap);
 export const addQueueProjectTask = (projectId, task) =>
   supabase
     .from("queue_project_tasks")
