@@ -2,9 +2,42 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
-  <title>周报自动化系统</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>周报自动化系统 — Supabase 连接测试</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Microsoft YaHei", sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; color: #222; }
+    section { margin-bottom: 32px; padding: 16px; border: 1px solid #ddd; border-radius: 8px; }
+    h2 { margin-top: 0; font-size: 16px; }
+    button { padding: 6px 14px; cursor: pointer; }
+    input[type="email"] { padding: 6px; width: 220px; }
+    .status { margin-top: 10px; padding: 8px; border-radius: 4px; font-size: 14px; word-break: break-all; }
+    .status.ok { background: #e6f4ea; color: #1e7e34; }
+    .status.warn { background: #fff8e1; color: #8a6d00; }
+    .status.error { background: #fdecea; color: #b3261e; }
+  </style>
 </head>
 <body>
-  <p>GitHub Pages 打通测试成功 — 部署于此页面时间戳: 2026-07-09T01:31:49Z</p>
+  <h1>Supabase 连接测试</h1>
+  <p id="config-status" class="status warn">加载中...</p>
+
+  <section>
+    <h2>1. 数据库连接测试</h2>
+    <p>需要先在 Supabase SQL Editor 里建好 <code>connection_test</code> 表（见配置指南）。</p>
+    <button id="db-test-btn">测试数据库连接</button>
+    <p id="db-result" class="status"></p>
+  </section>
+
+  <section>
+    <h2>2. 登录状态（Auth 魔法链接）</h2>
+    <p id="auth-status" class="status"></p>
+    <form id="magic-link-form">
+      <input type="email" name="email" placeholder="你的邮箱" required />
+      <button type="submit">发送登录链接</button>
+    </form>
+    <p id="magic-link-result" class="status"></p>
+    <button id="sign-out-btn" hidden>退出登录</button>
+  </section>
+
+  <script type="module" src="./app.js"></script>
 </body>
 </html>
