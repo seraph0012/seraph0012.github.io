@@ -136,9 +136,13 @@ function renderRow(row) {
       is_normal: tr.querySelector(".f-is-normal").checked,
       notes: tr.querySelector(".f-notes").value || null,
     };
-    await upsertMeetingWeek(patch);
-    // meeting_date/is_normal可能变了，归属月份/月内第几周要跟着重算，顺便可能影响本月后面几周
-    await loadTable();
+    try {
+      await upsertMeetingWeek(patch);
+      // meeting_date/is_normal可能变了，归属月份/月内第几周要跟着重算，顺便可能影响本月后面几周
+      await loadTable();
+    } catch (err) {
+      alert(`保存失败：${err.message}`);
+    }
   });
   tr.querySelector(".f-delete").addEventListener("click", async () => {
     if (!confirm(`确定删除 ${row.natural_week_start} 这一整周？如果已经有循环任务实例/周计划引用了这一周会删除失败。`)) return;
