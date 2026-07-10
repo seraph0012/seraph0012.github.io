@@ -4,27 +4,19 @@ import {
   listQueueProjectTasksByIds,
   listMilestonesByIds,
   listRecurringInstancesByIds,
-  listAdHocTasksByIds,
   updateQueueProjectTask,
   updateMilestone,
   updateRecurringInstance,
-  updateAdHocTask,
 } from "./db.js";
 
 export const SOURCE_LABEL = {
   queue_task: "顺序队列",
   milestone: "截止日期",
   recurring_instance: "循环任务",
-  ad_hoc: "计划外",
 };
 
 export function sourceIdOf(entry) {
-  return (
-    entry.source_queue_task_id ??
-    entry.source_milestone_id ??
-    entry.source_recurring_instance_id ??
-    entry.source_ad_hoc_id
-  );
+  return entry.source_queue_task_id ?? entry.source_milestone_id ?? entry.source_recurring_instance_id;
 }
 
 export function sourceColumnFor(sourceType) {
@@ -32,13 +24,12 @@ export function sourceColumnFor(sourceType) {
     queue_task: "source_queue_task_id",
     milestone: "source_milestone_id",
     recurring_instance: "source_recurring_instance_id",
-    ad_hoc: "source_ad_hoc_id",
   }[sourceType];
 }
 
 // items: [{source_type, source_id}] -> Map<"type:id", "[编号] 项目名 / 任务名">
 export async function buildLabelMap(items) {
-  const byType = { queue_task: [], milestone: [], recurring_instance: [], ad_hoc: [] };
+  const byType = { queue_task: [], milestone: [], recurring_instance: [] };
   for (const item of items) {
     byType[item.source_type]?.push(item.source_id);
   }
@@ -60,9 +51,6 @@ export async function buildLabelMap(items) {
   }
   for (const r of await listRecurringInstancesByIds(byType.recurring_instance)) {
     map.set(`recurring_instance:${r.id}`, `[${r.full_number}] ${r.recurring_task_templates.title}`);
-  }
-  for (const r of await listAdHocTasksByIds(byType.ad_hoc)) {
-    map.set(`ad_hoc:${r.id}`, `[计划外] ${r.title}`);
   }
   return map;
 }
@@ -91,11 +79,11 @@ export const SOURCE_STATUS_LABEL = {
 //   "第几次"这种区分同名任务的后缀是用户手动打在title里的，不是代码生成的。
 // - recurring_instance：只有模板标题+full_number，没有"第几次"概念，2级列固定用
 //   "full_number+模板标题"（历史数据证实这两级标题原本就是重复的，不是bug）。
-// - ad_hoc：多数未转正没有level1_number，此时只显示标题，不加编号前缀；没有2/3级。
 // items: [{source_type, source_id}] -> Map<"type:id", {level1,level2,level3(数字，供排序用),
-//   level1Text,level2Text,level3Text(拼好的显示文本), targetDeliverable, sourceStatus, completionDate}>
+//   level1Text,level2Text,level3Text(拼好的显示文本), targetDeliverable, sourceStatus, completionDate,
+//   completionDateAmendmentNote, detailUrl}>
 export async function buildSourceDetailMap(items) {
-  const byType = { queue_task: [], milestone: [], recurring_instance: [], ad_hoc: [] };
+  const byType = { queue_task: [], milestone: [], recurring_instance: [] };
   for (const item of items) {
     byType[item.source_type]?.push(item.source_id);
   }
@@ -119,8 +107,9 @@ export async function buildSourceDetailMap(items) {
       ...wbsTexts(level1, r.wbs_level2_number, r.wbs_level3_number, r.queue_projects.title, r.title),
       targetDeliverable: r.target_deliverable,
       sourceStatus: SOURCE_STATUS_LABEL[r.status] ?? r.status ?? "",
-      completionDate: null, // 顺序队列项目没有截止日期概念
-      detailUrl: `queue-project-detail.html?id=${r.project_id}`,
+      completionDate: r.planned_completion_date,
+      completionDateAmendmentNote: r.completion_date_amendment_note,
+      detailUrl: `tasks.html?highlight=queue_task:${r.id}`,
     });
   }
   for (const r of await listMilestonesByIds(byType.milestone)) {
@@ -133,7 +122,8 @@ export async function buildSourceDetailMap(items) {
       targetDeliverable: r.target_deliverable,
       sourceStatus: SOURCE_STATUS_LABEL[r.status] ?? r.status ?? "",
       completionDate: r.planned_date,
-      detailUrl: `deadline-project-detail.html?id=${r.project_id}`,
+      completionDateAmendmentNote: r.planned_date_amendment_note,
+      detailUrl: `tasks.html?highlight=milestone:${r.id}`,
     });
   }
   for (const r of await listRecurringInstancesByIds(byType.recurring_instance)) {
@@ -149,21 +139,8 @@ export async function buildSourceDetailMap(items) {
       targetDeliverable: r.recurring_task_templates.deliverable_template,
       sourceStatus: SOURCE_STATUS_LABEL[r.status] ?? r.status ?? "",
       completionDate: r.due_date,
-      detailUrl: `recurring-tasks.html?template=${r.template_id}`,
-    });
-  }
-  for (const r of await listAdHocTasksByIds(byType.ad_hoc)) {
-    map.set(`ad_hoc:${r.id}`, {
-      level1: r.level1_number,
-      level2: null,
-      level3: null,
-      level1Text: r.level1_number != null ? `${r.level1_number}.${r.title}` : r.title,
-      level2Text: "",
-      level3Text: "",
-      targetDeliverable: null, // 计划外任务没有"最终目标交付物"概念
-      sourceStatus: SOURCE_STATUS_LABEL[r.status] ?? r.status ?? "",
-      completionDate: null,
-      detailUrl: `ad-hoc-tasks.html`,
+      completionDateAmendmentNote: null,
+      detailUrl: `tasks.html?highlight=recurring_instance:${r.id}`,
     });
   }
   return map;
@@ -178,7 +155,6 @@ const SOURCE_STATUS_FOR_COMPLETION = {
   queue_task: { 已完成: "done", 未完成: "in_progress", 中止: "skipped", 未启动: "pending" },
   milestone: { 已完成: "done", 未完成: "in_progress", 中止: "stopped", 未启动: "not_started" },
   recurring_instance: { 已完成: "done", 未完成: "in_progress", 中止: "stopped", 未启动: "not_started" },
-  ad_hoc: { 已完成: "closed", 未完成: "open", 中止: "closed", 未启动: "open" },
 };
 
 export async function syncSourceStatus(sourceType, sourceId, completionStatus) {
@@ -186,7 +162,10 @@ export async function syncSourceStatus(sourceType, sourceId, completionStatus) {
   if (!target || sourceId == null) return;
   const today = new Date().toISOString().slice(0, 10);
   if (sourceType === "queue_task") {
-    await updateQueueProjectTask(sourceId, { status: target });
+    await updateQueueProjectTask(sourceId, {
+      status: target,
+      ...(target === "done" ? { actual_completion_date: today } : {}),
+    });
   } else if (sourceType === "milestone") {
     await updateMilestone(sourceId, { status: target, ...(target === "done" ? { actual_date: today } : {}) });
   } else if (sourceType === "recurring_instance") {
@@ -194,7 +173,5 @@ export async function syncSourceStatus(sourceType, sourceId, completionStatus) {
       status: target,
       ...(target === "done" ? { actual_completion_date: today } : {}),
     });
-  } else if (sourceType === "ad_hoc") {
-    await updateAdHocTask(sourceId, { status: target, ...(target === "closed" ? { actual_end: today } : {}) });
   }
 }

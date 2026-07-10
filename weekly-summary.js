@@ -3,13 +3,23 @@ import { renderNav } from "./shared/nav.js";
 import {
   listModules,
   listMeetingWeeks,
+  listQueueProjects,
+  listDeadlineProjects,
+  listRecurringInstancesForWeek,
   listWeeklyTaskEntries,
   createWeeklyTaskEntry,
   updateWeeklyTaskEntry,
   deleteWeeklyTaskEntry,
   updateMeetingWeekFields,
 } from "./shared/db.js";
-import { sourceIdOf, sourceColumnFor, buildLabelMap, buildSourceDetailMap, syncSourceStatus } from "./shared/taskLabels.js";
+import {
+  SOURCE_LABEL,
+  sourceIdOf,
+  sourceColumnFor,
+  buildLabelMap,
+  buildSourceDetailMap,
+  syncSourceStatus,
+} from "./shared/taskLabels.js";
 import { validateSourceDetail, validateOwnFields } from "./shared/entryValidation.js";
 
 const SUMMARY_REQUIRED_FIELDS = [
@@ -47,6 +57,7 @@ const RISK_OPTIONS = [
 let allModules = [];
 let allWeeks = [];
 let targetWeek = null;
+let unplannedCandidates = [];
 
 function moduleOptionsHtml(selectedId) {
   return (
@@ -175,7 +186,8 @@ async function generateSkeleton() {
         source_type: p.source_type,
         [sourceColumnFor(p.source_type)]: sourceIdOf(p),
         module_id: p.module_id ?? soleModuleId,
-        summary_category: p.source_type === "ad_hoc" ? "计划外" : "计划内",
+        // 从本周计划条目生成的骨架，必然出现在本周计划里，按定义一定是"计划内"，没有别的可能
+        summary_category: "计划内",
         owner: p.owner,
         deliverable_this_week: p.deliverable_this_week,
         // 实际用时先预填计划用时，省得每次都要重填一遍，实际有出入时用户自己改
@@ -186,6 +198,7 @@ async function generateSkeleton() {
     resultEl.textContent = toCreate.length === 0 ? "本周计划条目都已生成过总结骨架" : `已生成 ${toCreate.length} 条`;
     resultEl.className = "status ok";
     await loadSummary();
+    await populateUnplannedOptions();
   } catch (err) {
     resultEl.textContent = `失败：${err.message}`;
     resultEl.className = "status error";
@@ -214,12 +227,7 @@ async function loadSummary() {
       <td class="task-col readonly-col">${detail.targetDeliverable || ""}</td>
       <td class="readonly-col">${detail.sourceStatus || ""}</td>
       <td class="readonly-col">${detail.completionDate || ""}</td>
-      <td>
-        <select class="f-category" ${dis}>
-          <option value="计划内" ${e.summary_category === "计划内" ? "selected" : ""}>计划内</option>
-          <option value="计划外" ${e.summary_category === "计划外" ? "selected" : ""}>计划外</option>
-        </select>
-      </td>
+      <td class="readonly-col">${e.summary_category || ""}</td>
       <td><select class="f-module" ${dis}>${moduleOptionsHtml(e.module_id)}</select></td>
       <td><input type="text" class="f-owner" value="${e.owner || ""}" style="width:5em" ${dis} /></td>
       <td><input type="text" class="f-deliverable" value="${e.deliverable_this_week || ""}" style="width:12em" ${dis} /></td>
@@ -238,7 +246,6 @@ async function loadSummary() {
       // 不留着上次填的旧值——这几栏对已完成/中止/未启动的条目没意义
       const isIncomplete = status === "未完成";
       await updateWeeklyTaskEntry(e.id, {
-        summary_category: tr.querySelector(".f-category").value,
         module_id: tr.querySelector(".f-module").value || null,
         owner: tr.querySelector(".f-owner").value || null,
         deliverable_this_week: tr.querySelector(".f-deliverable").value || null,
@@ -262,12 +269,126 @@ async function loadSummary() {
     tr.querySelector(".f-delete").addEventListener("click", async () => {
       await deleteWeeklyTaskEntry(e.id);
       await loadSummary();
+      await populateUnplannedOptions();
     });
     tbody.appendChild(tr);
   }
 }
 
 document.getElementById("generate-skeleton-btn").addEventListener("click", generateSkeleton);
+
+// "计划外"就是"没出现在本周计划里、但本周做了"的任务，不需要单独预登记——候选来源是
+// 还没出现在本周计划、也还没出现在本周总结里的active顺序队列任务/未完成里程碑/本周循环
+// 实例（跟weekly-plan.js的候选池思路一样，但不做"仅当前指针"限制，因为这里恰恰是记录
+// "不是按计划来的"那部分工作）
+async function populateUnplannedOptions() {
+  const sel = document.getElementById("unplanned-select");
+  if (!targetWeek) {
+    sel.innerHTML = "";
+    unplannedCandidates = [];
+    return;
+  }
+  sel.innerHTML = `<option value="">加载中...</option>`;
+  const [queueProjects, deadlineProjects, recurringInstances, planEntries, summaryEntries] = await Promise.all([
+    listQueueProjects(),
+    listDeadlineProjects(),
+    listRecurringInstancesForWeek(targetWeek.id),
+    listWeeklyTaskEntries(targetWeek.id, "plan"),
+    listWeeklyTaskEntries(targetWeek.id, "summary"),
+  ]);
+  const excluded = new Set([
+    ...planEntries.map((e) => `${e.source_type}:${sourceIdOf(e)}`),
+    ...summaryEntries.map((e) => `${e.source_type}:${sourceIdOf(e)}`),
+  ]);
+
+  const candidates = [];
+  for (const p of queueProjects) {
+    for (const t of p.queue_project_tasks) {
+      if (t.status === "done" || t.status === "skipped") continue;
+      if (excluded.has(`queue_task:${t.id}`)) continue;
+      candidates.push({
+        source_type: "queue_task",
+        source_id: t.id,
+        module_id: null,
+        owner: null,
+        deliverable_this_week: t.target_deliverable || "",
+      });
+    }
+  }
+  for (const p of deadlineProjects) {
+    for (const m of p.deadline_milestones) {
+      if (m.status === "done" || m.status === "stopped") continue;
+      if (excluded.has(`milestone:${m.id}`)) continue;
+      candidates.push({
+        source_type: "milestone",
+        source_id: m.id,
+        module_id: null,
+        owner: null,
+        deliverable_this_week: m.target_deliverable || "",
+      });
+    }
+  }
+  for (const inst of recurringInstances) {
+    if (excluded.has(`recurring_instance:${inst.id}`)) continue;
+    candidates.push({
+      source_type: "recurring_instance",
+      source_id: inst.id,
+      module_id: inst.recurring_task_templates.module_id,
+      owner: inst.recurring_task_templates.owner,
+      deliverable_this_week: inst.recurring_task_templates.deliverable_template || "",
+    });
+  }
+
+  const labelMap = await buildLabelMap(candidates.map((c) => ({ source_type: c.source_type, source_id: c.source_id })));
+  for (const c of candidates) {
+    c.label = labelMap.get(`${c.source_type}:${c.source_id}`) || "(未知任务)";
+  }
+  unplannedCandidates = candidates;
+  sel.innerHTML =
+    candidates.length === 0
+      ? `<option value="">(没有可选的任务——都已在本周计划/总结里，或者还没建过)</option>`
+      : candidates.map((c, i) => `<option value="${i}">${SOURCE_LABEL[c.source_type]} ${c.label}</option>`).join("");
+}
+
+document.getElementById("add-unplanned-btn").addEventListener("click", async () => {
+  const resultEl = document.getElementById("add-unplanned-result");
+  if (isSummaryLocked()) {
+    resultEl.textContent = "本周总结已锁定，请先解锁再添加";
+    resultEl.className = "status warn";
+    return;
+  }
+  const idx = Number(document.getElementById("unplanned-select").value);
+  const c = unplannedCandidates[idx];
+  if (!c) {
+    resultEl.textContent = "请先选择一个任务";
+    resultEl.className = "status warn";
+    return;
+  }
+  resultEl.textContent = "添加中...";
+  resultEl.className = "status";
+  try {
+    const soleModuleId = allModules.length === 1 ? allModules[0].id : null;
+    await createWeeklyTaskEntry({
+      meeting_week_id: targetWeek.id,
+      appears_in: "summary",
+      source_type: c.source_type,
+      [sourceColumnFor(c.source_type)]: c.source_id,
+      module_id: c.module_id ?? soleModuleId,
+      // 从"记录计划外完成的任务"这个入口加进来的，本来就不在本周计划里，按定义就是"计划外"
+      summary_category: "计划外",
+      owner: c.owner,
+      deliverable_this_week: c.deliverable_this_week,
+    });
+    resultEl.textContent = "已添加";
+    resultEl.className = "status ok";
+    await populateUnplannedOptions();
+    await loadSummary();
+  } catch (err) {
+    resultEl.textContent = `失败：${err.message}`;
+    resultEl.className = "status error";
+  }
+});
+document.getElementById("refresh-unplanned-btn").addEventListener("click", populateUnplannedOptions);
 
 async function init() {
   const [modules, weeks] = await Promise.all([listModules(), listMeetingWeeks()]);
@@ -291,12 +412,14 @@ async function init() {
     targetWeek = defaultWeek;
     renderLockUI();
     await loadSummary();
+    await populateUnplannedOptions();
   }
 
   weekSelect.addEventListener("change", async () => {
     targetWeek = allWeeks.find((w) => w.id === Number(weekSelect.value));
     renderLockUI();
     await loadSummary();
+    await populateUnplannedOptions();
   });
 }
 

@@ -13,6 +13,11 @@ body.wide-page { max-width: 1600px; }
 .task-col { max-width: 14em; white-space: normal; word-break: break-word; }
 td.readonly-col { color: #555; }
 
+.project-block { border: 1px solid #ddd; border-radius: 6px; padding: 10px 12px; margin-bottom: 14px; }
+.project-block h3 { margin: 0 0 8px; font-size: 15px; }
+.locked-date { color: #888; }
+.row-highlight { outline: 2px solid #e8a33d; background: #fff8e1; }
+
 h1 { font-size: 22px; margin: 24px 0 16px; }
 h2 { font-size: 16px; }
 

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>周报自动化系统 — 任务管理</title>
+  <link rel="stylesheet" href="./shared/style.css" />
+</head>
+<body class="wide-page">
+  <nav id="app-nav"></nav>
+
+  <h1>任务管理</h1>
+  <p>所有任务在这里统一新建：先选类型，再选归属项目（或新建一个），标题/最终目标交付物/最终计划完成时间是每个任务都必填的字段。
+  "计划外/计划内"不用在这里选，那是总结页面根据本周计划自动判定的。</p>
+
+  <section>
+    <h2>新建任务</h2>
+    <form id="create-form" class="inline-form">
+      <label>类型
+        <select id="type-select">
+          <option value="queue">顺序队列</option>
+          <option value="deadline">截止日期</option>
+          <option value="recurring">循环任务</option>
+        </select>
+      </label>
+
+      <span id="project-picker-wrap">
+        <label>归属项目 <select id="project-select"></select></label>
+      </span>
+
+      <span id="new-project-fields">
+        <label>项目编号 <input type="number" id="new-project-number" min="1" style="width:5em" /></label>
+        <input type="text" id="new-project-title" placeholder="项目名" style="min-width:200px" />
+        <input type="text" id="new-project-category" placeholder="分类(可选，如 科研项目)" />
+        <label id="new-project-deadline-wrap" hidden>项目截止日期 <input type="date" id="new-project-deadline" /></label>
+      </span>
+
+      <span id="leaf-fields">
+        <label>WBS二级编号 <input type="number" id="wbs-level2" min="1" style="width:5em" /></label>
+        <label>WBS三级编号(可选) <input type="number" id="wbs-level3" min="1" style="width:5em" /></label>
+        <input type="text" id="leaf-title" placeholder="任务标题" style="min-width:220px" />
+        <input type="text" id="leaf-deliverable" placeholder="最终目标交付物(必填)" style="min-width:200px" />
+        <label>最终计划完成时间 <input type="date" id="leaf-completion-date" /></label>
+      </span>
+
+      <span id="recurring-fields" hidden>
+        <label>编号 <input type="number" id="recurring-number" min="1" style="width:5em" /></label>
+        <input type="text" id="recurring-title" placeholder="任务标题" style="min-width:200px" />
+        <select id="recurring-module"><option value="">(模块可选)</option></select>
+        <input type="text" id="recurring-owner" placeholder="责任人(可选)" />
+        <select id="recurring-frequency">
+          <option value="weekly">weekly</option>
+          <option value="monthly">monthly</option>
+          <option value="custom">custom</option>
+        </select>
+        <label>起始例会周 <select id="recurring-start-week"></select></label>
+        <input type="text" id="recurring-deliverable" placeholder="最终目标交付物(必填)" style="min-width:200px" />
+      </span>
+
+      <button type="submit">新建</button>
+    </form>
+    <p id="create-result" class="status"></p>
+  </section>
+
+  <section>
+    <h2>顺序队列任务</h2>
+    <div id="queue-list"></div>
+  </section>
+
+  <section>
+    <h2>截止日期任务</h2>
+    <div id="deadline-list"></div>
+  </section>
+
+  <section>
+    <h2>循环任务</h2>
+    <div id="recurring-list"></div>
+  </section>
+
+  <script type="module" src="./tasks.js"></script>
+</body>
+</html>

@@ -30,6 +30,17 @@
   </section>
 
   <section>
+    <h2>记录计划外完成的任务</h2>
+    <p>"计划外"就是没出现在本周计划里、但本周确实做了的任务，不用单独登记——从下面选一个已有的顺序队列/截止日期/循环任务即可，"计划内/计划外"会自动判定。如果这个任务压根还没建过，先去<a href="tasks.html" target="_blank" rel="noopener">任务管理</a>新建，回来刷新这里的下拉再选。</p>
+    <form id="add-unplanned-form" class="inline-form">
+      <select id="unplanned-select" style="min-width:320px"></select>
+      <button type="button" id="add-unplanned-btn">添加为计划外</button>
+      <button type="button" id="refresh-unplanned-btn" class="secondary">刷新列表</button>
+    </form>
+    <p id="add-unplanned-result" class="status"></p>
+  </section>
+
+  <section>
     <h2>总结条目</h2>
     <p>"任务1/2/3级"、"最终目标交付物"、"最终完成情况"、"最终计划完成时间"是在对应项目/任务详情页维护的字段，这里只读展示（"最终完成情况"会在你填写下面的"完成情况"时自动同步过去），改动请点"编辑任务信息"跳转过去。</p>
     <div class="table-scroll">

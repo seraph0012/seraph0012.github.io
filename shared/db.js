@@ -191,7 +191,7 @@ export const updateWeeklyTaskEntry = (id, patch) =>
 export const deleteWeeklyTaskEntry = (id) =>
   supabase.from("weekly_task_entries").delete().eq("id", id).then(unwrap);
 // weekly_task_entries的source_*_id外键没有加ON DELETE CASCADE（历史周记录不该被源任务删除
-// 静默带走），所以删除一个源任务(queue_task/milestone/recurring_instance/ad_hoc)前，
+// 静默带走），所以删除一个源任务(queue_task/milestone/recurring_instance)前，
 // 如果还有weekly_task_entries引用着它，数据库会用FK约束挡住删除。这个函数供"确实要删掉这个
 // 任务连带清掉引用它的计划/总结条目"的场景使用（调用前应先让用户确认，因为这些条目可能是
 // 已经生成过PPT的历史记录）。
@@ -205,6 +205,19 @@ export const countWeeklyTaskEntriesForSource = (sourceColumn, sourceId) =>
     .then(({ count, error }) => {
       if (error) throw error;
       return count ?? 0;
+    });
+// "最终计划完成时间"锁定判断：一旦这个任务被写进过任意一周的计划(appears_in='plan')，
+// 这个日期就要锁定，改动必须走订正说明——即使那一周已经过去/已经解锁编辑过其他字段，
+// 这个锁定也不解除(判断的是"有没有进入过计划"，不是"当前是否在锁定的周里")
+export const hasBeenPlanned = (sourceColumn, sourceId) =>
+  supabase
+    .from("weekly_task_entries")
+    .select("id", { count: "exact", head: true })
+    .eq(sourceColumn, sourceId)
+    .eq("appears_in", "plan")
+    .then(({ count, error }) => {
+      if (error) throw error;
+      return count > 0;
     });
 
 export const listRecurringInstancesForWeek = (weekId) =>
@@ -221,7 +234,7 @@ export const listQueueProjectTasksByIds = (ids) =>
     : supabase
         .from("queue_project_tasks")
         .select(
-          "id, project_id, title, wbs_level2_number, wbs_level3_number, target_deliverable, status, queue_projects!queue_project_tasks_project_id_fkey(title, level1_number)"
+          "id, project_id, title, wbs_level2_number, wbs_level3_number, target_deliverable, planned_completion_date, actual_completion_date, completion_date_amendment_note, status, queue_projects!queue_project_tasks_project_id_fkey(title, level1_number)"
         )
         .in("id", ids)
         .then(unwrap);
@@ -231,7 +244,7 @@ export const listMilestonesByIds = (ids) =>
     : supabase
         .from("deadline_milestones")
         .select(
-          "id, project_id, title, wbs_level2_number, wbs_level3_number, target_deliverable, planned_date, status, deadline_projects(title, level1_number)"
+          "id, project_id, title, wbs_level2_number, wbs_level3_number, target_deliverable, planned_date, planned_date_amendment_note, actual_date, status, deadline_projects(title, level1_number)"
         )
         .in("id", ids)
         .then(unwrap);
@@ -245,17 +258,3 @@ export const listRecurringInstancesByIds = (ids) =>
         )
         .in("id", ids)
         .then(unwrap);
-export const listAdHocTasksByIds = (ids) =>
-  ids.length === 0
-    ? Promise.resolve([])
-    : supabase.from("ad_hoc_tasks").select("id, title, level1_number, status").in("id", ids).then(unwrap);
-
-// ---- ad_hoc_tasks (类型D) ----
-export const listAdHocTasks = () =>
-  supabase.from("ad_hoc_tasks").select("*").order("actual_start", { ascending: false }).then(unwrap);
-export const createAdHocTask = (row) =>
-  supabase.from("ad_hoc_tasks").insert(row).select().single().then(unwrap);
-export const updateAdHocTask = (id, patch) =>
-  supabase.from("ad_hoc_tasks").update(patch).eq("id", id).select().single().then(unwrap);
-export const deleteAdHocTask = (id) =>
-  supabase.from("ad_hoc_tasks").delete().eq("id", id).then(unwrap);

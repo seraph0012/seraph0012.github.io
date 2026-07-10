@@ -6,7 +6,6 @@ import {
   listQueueProjects,
   listDeadlineProjects,
   listRecurringInstancesForWeek,
-  listAdHocTasks,
   listWeeklyTaskEntries,
   createWeeklyTaskEntry,
   updateWeeklyTaskEntry,
@@ -68,11 +67,10 @@ async function computeCarryOverSet(prevWeek) {
 }
 
 async function generateCandidatePool(week) {
-  const [queueProjects, deadlineProjects, recurringInstances, adHocTasks, existingPlan] = await Promise.all([
+  const [queueProjects, deadlineProjects, recurringInstances, existingPlan] = await Promise.all([
     listQueueProjects(),
     listDeadlineProjects(),
     listRecurringInstancesForWeek(week.id),
-    listAdHocTasks(),
     listWeeklyTaskEntries(week.id, "plan"),
   ]);
 
@@ -120,18 +118,6 @@ async function generateCandidatePool(week) {
       owner: inst.recurring_task_templates.owner,
       deliverable_this_week: inst.recurring_task_templates.deliverable_template || "",
       execution_deadline: inst.due_date,
-    });
-  }
-
-  for (const t of adHocTasks) {
-    if (t.status !== "open" || t.promoted_to_type) continue;
-    raw.push({
-      source_type: "ad_hoc",
-      source_id: t.id,
-      module_id: null,
-      owner: null,
-      deliverable_this_week: "",
-      execution_deadline: null,
     });
   }
 
@@ -363,12 +349,7 @@ async function loadSavedPlan() {
       <td class="task-col readonly-col">${detail.level3Text || ""}</td>
       <td class="task-col readonly-col">${detail.targetDeliverable || ""}</td>
       <td class="readonly-col">${detail.completionDate || ""}</td>
-      <td>
-        <select class="f-category" ${dis}>
-          <option value="上周未完成" ${e.plan_category === "上周未完成" ? "selected" : ""}>上周未完成</option>
-          <option value="本周新增" ${e.plan_category === "本周新增" ? "selected" : ""}>本周新增</option>
-        </select>
-      </td>
+      <td class="readonly-col">${e.plan_category || ""}</td>
       <td><select class="f-module" ${dis}>${moduleOptionsHtml(e.module_id)}</select></td>
       <td><input type="text" class="f-owner" value="${e.owner || ""}" style="width:5em" ${dis} /></td>
       <td><input type="text" class="f-deliverable" value="${e.deliverable_this_week || ""}" style="width:12em" ${dis} /></td>
@@ -383,7 +364,6 @@ async function loadSavedPlan() {
     `;
     const save = async () => {
       await updateWeeklyTaskEntry(e.id, {
-        plan_category: tr.querySelector(".f-category").value,
         module_id: tr.querySelector(".f-module").value || null,
         owner: tr.querySelector(".f-owner").value || null,
         deliverable_this_week: tr.querySelector(".f-deliverable").value || null,
