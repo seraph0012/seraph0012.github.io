@@ -49,7 +49,10 @@ let recurringTemplates = [];
 const openDetailKeys = new Set();
 if (highlightKey) openDetailKeys.add(highlightKey);
 
+// level2为空代表"项目本身就是任务，没有再往下分解"(比如临时的一次性计划外工作)，
+// 这时候编号就是纯"5"而不是"5.2"
 function wbsLabel(level1, level2, level3) {
+  if (level2 == null) return `${level1}`;
   return level3 != null ? `${level1}.${level2}.${level3}` : `${level1}.${level2}`;
 }
 
@@ -148,41 +151,59 @@ function parseOwnerValue() {
   return { isNew: false, type: kind, id: Number(rest) };
 }
 
+// "无(项目本身就是任务)"这个选项只在项目还完全没有任何任务时才提供——一个项目要么是
+// "本身就是一条扁平任务"，要么是"往下分解成二级/三级"，两者互斥(DB层用partial unique
+// index强制)，不然会出现"项目自己是任务、同时又有子任务"这种说不清楚该看哪个的状态。
 function refreshLevel2Options(sel) {
   const level2Select = document.getElementById("wbs-level2-select");
   if (sel.isNew) {
-    level2Select.innerHTML = `<option value="__new__">+ 新建二级</option>`;
-    document.getElementById("wbs-level2-new-wrap").hidden = false;
-    document.getElementById("wbs-level2-new").value = 1;
-    document.getElementById("wbs-level3").value = 1;
+    // 新项目还没建，必然是空的，两个选项都能选
+    level2Select.innerHTML = `<option value="__none__">无(项目本身就是任务)</option><option value="__new__">+ 新建二级</option>`;
+    level2Select.value = "__none__";
+    onLevel2Change(sel);
     return;
   }
   const list = sel.type === "queue" ? queueProjects : deadlineProjects;
   const project = list.find((p) => p.id === sel.id);
   const children = sel.type === "queue" ? project.queue_project_tasks : project.deadline_milestones;
-  const groups = [...new Set(children.map((c) => c.wbs_level2_number))].sort((a, b) => a - b);
+  const groups = [...new Set(children.filter((c) => c.wbs_level2_number != null).map((c) => c.wbs_level2_number))].sort(
+    (a, b) => a - b
+  );
   const maxLevel2 = groups.length ? Math.max(...groups) : 0;
+  const noneOption = children.length === 0 ? `<option value="__none__">无(项目本身就是任务)</option>` : "";
   level2Select.innerHTML =
+    noneOption +
     groups.map((g) => `<option value="${g}">二级 ${g}</option>`).join("") +
     `<option value="__new__">+ 新建二级(预填 ${maxLevel2 + 1})</option>`;
-  level2Select.value = groups.length ? String(groups[0]) : "__new__";
+  level2Select.value = children.length === 0 ? "__none__" : groups.length ? String(groups[0]) : "__new__";
   onLevel2Change(sel);
 }
 
 function onLevel2Change(sel) {
   const level2Select = document.getElementById("wbs-level2-select");
-  const isNewLevel2 = level2Select.value === "__new__";
+  const val = level2Select.value;
+  const isNewLevel2 = val === "__new__";
+  const isNone = val === "__none__";
   document.getElementById("wbs-level2-new-wrap").hidden = !isNewLevel2;
-  if (sel.isNew) return;
+  document.getElementById("wbs-level3").closest("label").hidden = isNone;
+  if (isNone) return;
+  if (sel.isNew) {
+    if (isNewLevel2) {
+      document.getElementById("wbs-level2-new").value = 1;
+      document.getElementById("wbs-level3").value = 1;
+    }
+    return;
+  }
   const list = sel.type === "queue" ? queueProjects : deadlineProjects;
   const project = list.find((p) => p.id === sel.id);
   const children = sel.type === "queue" ? project.queue_project_tasks : project.deadline_milestones;
   if (isNewLevel2) {
-    const maxLevel2 = children.length ? Math.max(...children.map((c) => c.wbs_level2_number)) : 0;
+    const existingLevel2 = children.filter((c) => c.wbs_level2_number != null).map((c) => c.wbs_level2_number);
+    const maxLevel2 = existingLevel2.length ? Math.max(...existingLevel2) : 0;
     document.getElementById("wbs-level2-new").value = maxLevel2 + 1;
     document.getElementById("wbs-level3").value = 1;
   } else {
-    const level2Value = Number(level2Select.value);
+    const level2Value = Number(val);
     const siblings = children.filter((c) => c.wbs_level2_number === level2Value);
     const maxLevel3 = siblings.reduce((m, c) => Math.max(m, c.wbs_level3_number ?? 0), 0);
     document.getElementById("wbs-level3").value = maxLevel3 + 1;
@@ -234,10 +255,13 @@ async function createQueueOrDeadlineLeaf(sel) {
   const deliverable = document.getElementById("leaf-deliverable").value.trim();
   const completionDate = document.getElementById("leaf-completion-date").value;
   const level2Select = document.getElementById("wbs-level2-select");
-  const level2 =
-    level2Select.value === "__new__" ? Number(document.getElementById("wbs-level2-new").value) : Number(level2Select.value);
-  const level3raw = document.getElementById("wbs-level3").value;
-  const level3 = level3raw ? Number(level3raw) : null;
+  let level2 = null;
+  let level3 = null;
+  if (level2Select.value !== "__none__") {
+    level2 = level2Select.value === "__new__" ? Number(document.getElementById("wbs-level2-new").value) : Number(level2Select.value);
+    const level3raw = document.getElementById("wbs-level3").value;
+    level3 = level3raw ? Number(level3raw) : null;
+  }
   if (!title || !deliverable || !completionDate) {
     throw new Error("任务标题/最终目标交付物/最终计划完成时间都是必填项");
   }
@@ -372,75 +396,109 @@ document.getElementById("create-form").addEventListener("submit", async (e) => {
   }
 });
 
-// ---------------- 合并任务表 ----------------
+// ---------------- 合并任务表(按项目分组、项目下按二级分组) ----------------
 
-function buildMergedRows() {
-  const rows = [];
+// direct: level2为空的那一条(项目本身就是任务)，最多1条；level2Groups: 按二级编号分组、
+// 组内按三级编号排好序——一个二级分组如果只有1条且没有三级编号，说明这个二级本身就是
+// 叶子任务(没有再往下分)，不需要单独显示一个分组标题行，直接当普通任务行展示
+function groupChildren(children) {
+  const direct = children.find((c) => c.wbs_level2_number == null) || null;
+  const rest = children.filter((c) => c.wbs_level2_number != null);
+  const byLevel2 = new Map();
+  for (const c of rest) {
+    if (!byLevel2.has(c.wbs_level2_number)) byLevel2.set(c.wbs_level2_number, []);
+    byLevel2.get(c.wbs_level2_number).push(c);
+  }
+  const level2Groups = [...byLevel2.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([level2, items]) => ({
+      level2,
+      items: items.sort((a, b) => (a.wbs_level3_number ?? 0) - (b.wbs_level3_number ?? 0)),
+    }));
+  return { direct, level2Groups };
+}
+
+function makeLeafRow(type, typeLabel, project, item, number) {
+  const isQueue = type === "queue";
+  const isDeadline = type === "deadline";
+  const isRecurring = type === "recurring";
+  return {
+    kind: "leaf",
+    key: isQueue ? `queue_task:${item.id}` : isDeadline ? `milestone:${item.id}` : `recurring_instance:${item.id}`,
+    type,
+    typeLabel,
+    number,
+    projectName: project.title,
+    title: isRecurring ? project.title : item.title,
+    deliverable: isRecurring ? project.deliverable_template : item.target_deliverable,
+    completionDate: isQueue ? item.planned_completion_date : isDeadline ? item.planned_date : item.due_date,
+    actualDate: item.actual_completion_date ?? item.actual_date,
+    status: item.status,
+    project,
+    item,
+  };
+}
+
+function buildDisplayRows() {
+  const displayRows = [];
+
   for (const p of queueProjects) {
-    for (const t of p.queue_project_tasks) {
-      rows.push({
-        key: `queue_task:${t.id}`,
-        type: "queue",
-        typeLabel: "顺序队列",
-        number: wbsLabel(p.level1_number, t.wbs_level2_number, t.wbs_level3_number),
-        sortKey: [p.level1_number, t.wbs_level2_number, t.wbs_level3_number ?? 0],
-        projectName: p.title,
-        title: t.title,
-        deliverable: t.target_deliverable,
-        completionDate: t.planned_completion_date,
-        actualDate: t.actual_completion_date,
-        status: t.status,
-        project: p,
-        item: t,
-      });
+    const { direct, level2Groups } = groupChildren(p.queue_project_tasks);
+    if (!direct && level2Groups.length === 0) continue; // 空项目(还没建任何任务)暂不展示
+    displayRows.push({ kind: "project-header", label: `[${p.level1_number}] ${p.title}`, typeLabel: "顺序队列" });
+    if (direct) displayRows.push(makeLeafRow("queue", "顺序队列", p, direct, wbsLabel(p.level1_number, null, null)));
+    for (const g of level2Groups) {
+      if (g.items.length === 1 && g.items[0].wbs_level3_number == null) {
+        displayRows.push(makeLeafRow("queue", "顺序队列", p, g.items[0], wbsLabel(p.level1_number, g.level2, null)));
+      } else {
+        displayRows.push({ kind: "level2-header", label: `${p.level1_number}.${g.level2}` });
+        for (const t of g.items) {
+          displayRows.push(makeLeafRow("queue", "顺序队列", p, t, wbsLabel(p.level1_number, g.level2, t.wbs_level3_number)));
+        }
+      }
     }
   }
+
   for (const p of deadlineProjects) {
-    for (const m of p.deadline_milestones) {
-      rows.push({
-        key: `milestone:${m.id}`,
-        type: "deadline",
-        typeLabel: "截止日期",
-        number: wbsLabel(p.level1_number, m.wbs_level2_number, m.wbs_level3_number),
-        sortKey: [p.level1_number, m.wbs_level2_number, m.wbs_level3_number ?? 0],
-        projectName: p.title,
-        title: m.title,
-        deliverable: m.target_deliverable,
-        completionDate: m.planned_date,
-        actualDate: m.actual_date,
-        status: m.status,
-        project: p,
-        item: m,
-      });
+    const { direct, level2Groups } = groupChildren(p.deadline_milestones);
+    if (!direct && level2Groups.length === 0) continue;
+    displayRows.push({ kind: "project-header", label: `[${p.level1_number}] ${p.title}`, typeLabel: "截止日期" });
+    if (direct) displayRows.push(makeLeafRow("deadline", "截止日期", p, direct, wbsLabel(p.level1_number, null, null)));
+    for (const g of level2Groups) {
+      if (g.items.length === 1 && g.items[0].wbs_level3_number == null) {
+        displayRows.push(makeLeafRow("deadline", "截止日期", p, g.items[0], wbsLabel(p.level1_number, g.level2, null)));
+      } else {
+        displayRows.push({ kind: "level2-header", label: `${p.level1_number}.${g.level2}` });
+        for (const m of g.items) {
+          displayRows.push(makeLeafRow("deadline", "截止日期", p, m, wbsLabel(p.level1_number, g.level2, m.wbs_level3_number)));
+        }
+      }
     }
   }
+
   for (const t of recurringTemplates) {
+    if (t.recurring_task_instances.length === 0) continue;
+    displayRows.push({ kind: "project-header", label: `[${t.level1_number}] ${t.title}`, typeLabel: "循环任务" });
+    const byLevel2 = new Map();
     for (const inst of t.recurring_task_instances) {
-      rows.push({
-        key: `recurring_instance:${inst.id}`,
-        type: "recurring",
-        typeLabel: "循环任务",
-        number: inst.full_number,
-        sortKey: [t.level1_number, inst.level2_number, inst.level3_number ?? 0],
-        projectName: t.title,
-        title: t.title,
-        deliverable: t.deliverable_template,
-        completionDate: inst.due_date,
-        actualDate: inst.actual_completion_date,
-        status: inst.status,
-        project: t,
-        item: inst,
-      });
+      if (!byLevel2.has(inst.level2_number)) byLevel2.set(inst.level2_number, []);
+      byLevel2.get(inst.level2_number).push(inst);
+    }
+    const groups = [...byLevel2.entries()].sort((a, b) => a[0] - b[0]);
+    for (const [level2, items] of groups) {
+      const sortedItems = items.sort((a, b) => (a.level3_number ?? 0) - (b.level3_number ?? 0));
+      if (sortedItems.length === 1 && sortedItems[0].level3_number == null) {
+        displayRows.push(makeLeafRow("recurring", "循环任务", t, sortedItems[0], sortedItems[0].full_number));
+      } else {
+        displayRows.push({ kind: "level2-header", label: `${t.level1_number}.${level2}` });
+        for (const inst of sortedItems) {
+          displayRows.push(makeLeafRow("recurring", "循环任务", t, inst, inst.full_number));
+        }
+      }
     }
   }
-  rows.sort((a, b) => {
-    if (a.type !== b.type) return a.type.localeCompare(b.type);
-    for (let i = 0; i < 3; i++) {
-      if (a.sortKey[i] !== b.sortKey[i]) return a.sortKey[i] - b.sortKey[i];
-    }
-    return 0;
-  });
-  return rows;
+
+  return displayRows;
 }
 
 function terminateStatusFor(type) {
@@ -667,8 +725,9 @@ function buildDetailPanel(r, locked) {
 }
 
 async function renderTaskTable() {
-  const rows = buildMergedRows();
-  const lockable = rows.filter((r) => r.type !== "recurring");
+  const rows = buildDisplayRows();
+  const leafRows = rows.filter((r) => r.kind === "leaf");
+  const lockable = leafRows.filter((r) => r.type !== "recurring");
   const lockFlags = await Promise.all(
     lockable.map((r) => hasBeenPlanned(r.type === "queue" ? "source_queue_task_id" : "source_milestone_id", r.item.id))
   );
@@ -677,6 +736,19 @@ async function renderTaskTable() {
   const tbody = document.getElementById("tasks-tbody");
   tbody.innerHTML = "";
   for (const r of rows) {
+    if (r.kind === "project-header") {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td colspan="9" style="background:#f2f2f2;font-weight:600;">${r.label}（${r.typeLabel}）</td>`;
+      tbody.appendChild(tr);
+      continue;
+    }
+    if (r.kind === "level2-header") {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td colspan="9" style="padding-left:2em;color:#666;">${r.label}</td>`;
+      tbody.appendChild(tr);
+      continue;
+    }
+
     const locked = lockMap.get(r.key) || false;
     const tr = document.createElement("tr");
     if (r.key === highlightKey) tr.className = "row-highlight";
