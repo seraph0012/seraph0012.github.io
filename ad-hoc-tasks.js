@@ -13,6 +13,8 @@ import {
   createQueueProject,
   createDeadlineProject,
   createRecurringTemplate,
+  countWeeklyTaskEntriesForSource,
+  deleteWeeklyTaskEntriesForSource,
 } from "./shared/db.js";
 
 const session = await requireAuth();
@@ -185,8 +187,11 @@ async function loadTable() {
       });
     }
     tr.querySelector(".f-delete").addEventListener("click", async () => {
-      if (!confirm(`确定删除计划外任务"${t.title}"？此操作不可撤销。`)) return;
+      const entryCount = await countWeeklyTaskEntriesForSource("source_ad_hoc_id", t.id);
+      const extraWarning = entryCount > 0 ? `\n\n注意：还有 ${entryCount} 条计划/总结条目引用着这个任务，会一并删除（如果已经生成过PPT，这些历史记录也会消失）。` : "";
+      if (!confirm(`确定删除计划外任务"${t.title}"？此操作不可撤销。${extraWarning}`)) return;
       try {
+        if (entryCount > 0) await deleteWeeklyTaskEntriesForSource("source_ad_hoc_id", t.id);
         if (t.level1_number != null) await retireTaskNumber(t.level1_number);
         await deleteAdHocTask(t.id);
         await loadTable();

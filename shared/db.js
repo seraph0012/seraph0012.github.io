@@ -190,6 +190,22 @@ export const updateWeeklyTaskEntry = (id, patch) =>
     .then(unwrap);
 export const deleteWeeklyTaskEntry = (id) =>
   supabase.from("weekly_task_entries").delete().eq("id", id).then(unwrap);
+// weekly_task_entries的source_*_id外键没有加ON DELETE CASCADE（历史周记录不该被源任务删除
+// 静默带走），所以删除一个源任务(queue_task/milestone/recurring_instance/ad_hoc)前，
+// 如果还有weekly_task_entries引用着它，数据库会用FK约束挡住删除。这个函数供"确实要删掉这个
+// 任务连带清掉引用它的计划/总结条目"的场景使用（调用前应先让用户确认，因为这些条目可能是
+// 已经生成过PPT的历史记录）。
+export const deleteWeeklyTaskEntriesForSource = (sourceColumn, sourceId) =>
+  supabase.from("weekly_task_entries").delete().eq(sourceColumn, sourceId).then(unwrap);
+export const countWeeklyTaskEntriesForSource = (sourceColumn, sourceId) =>
+  supabase
+    .from("weekly_task_entries")
+    .select("id", { count: "exact", head: true })
+    .eq(sourceColumn, sourceId)
+    .then(({ count, error }) => {
+      if (error) throw error;
+      return count ?? 0;
+    });
 
 export const listRecurringInstancesForWeek = (weekId) =>
   supabase
