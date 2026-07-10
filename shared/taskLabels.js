@@ -50,7 +50,7 @@ export async function buildLabelMap(items) {
     map.set(`milestone:${r.id}`, `[${num}] ${r.deadline_projects.title} / ${r.title}`);
   }
   for (const r of await listRecurringInstancesByIds(byType.recurring_instance)) {
-    map.set(`recurring_instance:${r.id}`, `[${r.full_number}] ${r.recurring_task_templates.title}`);
+    map.set(`recurring_instance:${r.id}`, `[${r.full_number}] ${r.title || r.recurring_task_templates.title}`);
   }
   return map;
 }
@@ -134,9 +134,9 @@ export async function buildSourceDetailMap(items) {
       level2: r.level2_number,
       level3: r.level3_number,
       level1Text: `${level1}.${templateTitle}`,
-      level2Text: `${r.full_number} ${templateTitle}`,
+      level2Text: `${r.full_number} ${r.title || templateTitle}`,
       level3Text: "",
-      targetDeliverable: r.recurring_task_templates.deliverable_template,
+      targetDeliverable: r.target_deliverable,
       sourceStatus: SOURCE_STATUS_LABEL[r.status] ?? r.status ?? "",
       completionDate: r.due_date,
       completionDateAmendmentNote: null,

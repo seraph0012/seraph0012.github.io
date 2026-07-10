@@ -20,8 +20,10 @@
 
       <span id="new-project-fields" hidden>
         <label>编号 <input type="number" id="new-project-number" min="1" style="width:5em" /></label>
-        <input type="text" id="new-project-title" placeholder="项目/任务标题" style="min-width:200px" />
-        <input type="text" id="new-project-category" placeholder="分类(可选，仅顺序队列)" />
+        <span id="new-project-title-wrap">
+          <input type="text" id="new-project-title" placeholder="项目/任务标题" style="min-width:200px" />
+          <input type="text" id="new-project-category" placeholder="分类(可选，仅顺序队列)" />
+        </span>
         <label id="new-project-deadline-wrap" hidden>项目截止日期 <input type="date" id="new-project-deadline" /></label>
       </span>
 
@@ -44,7 +46,8 @@
           <option value="monthly">monthly</option>
           <option value="custom">custom</option>
         </select>
-        <input type="text" id="recurring-deliverable" placeholder="最终目标交付物(必填)" style="min-width:200px" />
+        <label>动词前缀 <input type="text" id="recurring-title-verb" placeholder="可选，如：制作" style="width:100px" /></label>
+        <label>名词部分/交付物基础名 <input type="text" id="recurring-title-noun" placeholder="必填，如：周例会PPT" style="min-width:180px" /></label>
         <label>第一次的例会周 <select id="recurring-first-week"></select></label>
       </span>
 

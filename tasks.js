@@ -28,6 +28,7 @@ import {
   claimTaskNumber,
   setTaskNumberOwner,
   suggestNextTaskNumber,
+  deleteTaskNumber,
   hasBeenPlanned,
   countWeeklyTaskEntriesForSource,
   deleteWeeklyTaskEntriesForSource,
@@ -243,6 +244,24 @@ function onLevel2Change(sel) {
 
 document.getElementById("wbs-level2-select").addEventListener("change", () => onLevel2Change(parseOwnerValue()));
 
+// 循环任务标题/最终交付物按当次生成的月/周动态拼出来(2026-07-10用户要求)——
+// 模板本身只存"动词前缀(title_verb)+名词部分(title_noun)"，比如"制作"+"周例会PPT"，
+// 每次生成实例时用目标例会周的calendar_month(月份)+week_index_in_month(月内第几周)
+// 现算出"7月4周"这种限定语插进去。monthly频率没有level3(月内不再细分)，限定语只用月份。
+// 交付物不带动词前缀(交付物是"7月4周周例会PPT"，不是"制作7月4周周例会PPT")——判断任务是否
+// 最终完成，靠的正是拿每周填的"本周交付物"去精确匹配这个值，所以必须按当周现算，不能是
+// 模板级别固定不变的字符串。
+function monthWeekLabel(targetWeek, frequency) {
+  const month = Number(targetWeek.calendar_month.slice(5, 7));
+  return frequency === "monthly" ? `${month}月` : `${month}月${targetWeek.week_index_in_month}周`;
+}
+function generateInstanceTitle(template, targetWeek) {
+  return `${template.title_verb}${monthWeekLabel(targetWeek, template.frequency)}${template.title_noun}`;
+}
+function generateInstanceDeliverable(template, targetWeek) {
+  return `${monthWeekLabel(targetWeek, template.frequency)}${template.title_noun}`;
+}
+
 function refreshRecurringPreview(templateId) {
   const t = recurringTemplates.find((x) => x.id === templateId);
   const previewEl = document.getElementById("recurring-instance-preview");
@@ -254,7 +273,9 @@ function refreshRecurringPreview(templateId) {
   }
   const { level2, level3 } = computeNextNumber(t, t.recurring_task_instances, targetWeek);
   const fullNumber = level3 != null ? `${t.level1_number}.${level2}.${level3}` : `${t.level1_number}.${level2}`;
-  previewEl.textContent = `将生成实例 ${fullNumber}（对应例会周 ${targetWeek.natural_week_start}）`;
+  const title = generateInstanceTitle(t, targetWeek);
+  const deliverable = generateInstanceDeliverable(t, targetWeek);
+  previewEl.textContent = `将生成实例 ${fullNumber}「${title}」（对应例会周 ${targetWeek.natural_week_start}，最终交付物：${deliverable}）`;
   previewEl.className = "status";
 }
 
@@ -262,6 +283,7 @@ async function onOwnerChange() {
   const sel = parseOwnerValue();
   const isQueueOrDeadline = sel.type === "queue" || sel.type === "deadline";
   document.getElementById("new-project-fields").hidden = !sel.isNew;
+  document.getElementById("new-project-title-wrap").hidden = sel.type === "recurring";
   document.getElementById("new-project-deadline-wrap").hidden = sel.type !== "deadline";
   document.getElementById("leaf-fields").hidden = !isQueueOrDeadline;
   document.getElementById("recurring-new-fields").hidden = !(sel.isNew && sel.type === "recurring");
@@ -360,15 +382,16 @@ async function createQueueOrDeadlineLeaf(sel) {
 }
 
 async function createRecurringNew() {
-  const title = document.getElementById("new-project-title").value.trim();
-  const deliverable = document.getElementById("recurring-deliverable").value.trim();
+  const titleVerb = document.getElementById("recurring-title-verb").value.trim();
+  const titleNoun = document.getElementById("recurring-title-noun").value.trim();
   const firstWeekId = Number(document.getElementById("recurring-first-week").value);
   const level1Number = Number(document.getElementById("new-project-number").value);
   const moduleId = document.getElementById("recurring-module").value || null;
   const owner = document.getElementById("recurring-owner-select").value.trim();
-  if (!title || !deliverable || !firstWeekId || !moduleId || !owner) {
-    throw new Error("标题/模块/责任人/最终目标交付物/第一次的例会周都是必填项");
+  if (!titleNoun || !firstWeekId || !moduleId || !owner) {
+    throw new Error("名词部分(交付物)/模块/责任人/第一次的例会周都是必填项");
   }
+  const title = titleVerb + titleNoun;
   const numberRow = await claimTaskNumber({
     task_type: "recurring",
     title_snapshot: title,
@@ -379,10 +402,11 @@ async function createRecurringNew() {
   const frequency = document.getElementById("recurring-frequency").value;
   const template = await createRecurringTemplate({
     title,
+    title_verb: titleVerb,
+    title_noun: titleNoun,
     module_id: moduleId,
     owner,
     frequency,
-    deliverable_template: deliverable,
     level1_number: numberRow.level1_number,
   });
   await setTaskNumberOwner(numberRow.level1_number, template.id);
@@ -396,6 +420,8 @@ async function createRecurringNew() {
     level3_number: level3,
     full_number: fullNumber,
     due_date: firstWeek.meeting_date,
+    title: generateInstanceTitle(template, firstWeek),
+    target_deliverable: generateInstanceDeliverable(template, firstWeek),
   });
 }
 
@@ -411,6 +437,8 @@ async function generateNextInstance(templateId) {
     level3_number: level3,
     full_number: fullNumber,
     due_date: targetWeek.meeting_date,
+    title: generateInstanceTitle(t, targetWeek),
+    target_deliverable: generateInstanceDeliverable(t, targetWeek),
   });
 }
 
@@ -434,6 +462,8 @@ document.getElementById("create-form").addEventListener("submit", async (e) => {
     document.getElementById("leaf-title").value = "";
     document.getElementById("leaf-deliverable").value = "";
     document.getElementById("leaf-completion-date").value = "";
+    document.getElementById("recurring-title-verb").value = "";
+    document.getElementById("recurring-title-noun").value = "";
     await onOwnerChange();
   } catch (err) {
     resultEl.textContent = `失败：${err.message}`;
@@ -480,10 +510,10 @@ function makeLeafRow(type, typeLabel, project, item, number) {
     typeLabel,
     number,
     projectName: project.title,
-    title: isRecurring ? project.title : item.title,
+    title: isRecurring ? item.title || project.title : item.title,
     moduleName: moduleNameFor(moduleId),
     owner: owner ?? "",
-    deliverable: isRecurring ? project.deliverable_template : item.target_deliverable,
+    deliverable: item.target_deliverable,
     completionDate: isQueue ? item.planned_completion_date : isDeadline ? item.planned_date : item.due_date,
     actualDate: item.actual_completion_date ?? item.actual_date,
     status: item.status,
@@ -543,7 +573,11 @@ function buildDisplayRows() {
       if (sortedItems.length === 1 && sortedItems[0].level3_number == null) {
         displayRows.push(makeLeafRow("recurring", "循环任务", t, sortedItems[0], sortedItems[0].full_number));
       } else {
-        displayRows.push({ kind: "level2-header", label: `${t.level1_number}.${level2}` });
+        // 2级分组标题也按月份现算(如"制作7月周例会PPT")，不只是干巴巴的编号——
+        // 取组内第一个实例的due_date所在月份，同一个level2分组下的实例本来就都在同一个月
+        const groupMonth = Number(sortedItems[0].due_date.slice(5, 7));
+        const groupLabel = `${t.level1_number}.${level2} ${t.title_verb}${groupMonth}月${t.title_noun}`;
+        displayRows.push({ kind: "level2-header", label: groupLabel });
         for (const inst of sortedItems) {
           displayRows.push(makeLeafRow("recurring", "循环任务", t, inst, inst.full_number));
         }
@@ -728,10 +762,13 @@ function buildDetailPanel(r, locked) {
     wrap.querySelector(".d-delete-project").addEventListener("click", async () => {
       const children = isQueue ? r.project.queue_project_tasks : r.project.deadline_milestones;
       const ok = await confirmAndCascadeDelete({
-        label: `项目"${r.project.title}"（含其下全部${children.length}个任务）`,
+        label: `项目"${r.project.title}"（含其下全部${children.length}个任务，编号${r.project.level1_number}会被释放可复用）`,
         sourceColumn: isQueue ? "source_queue_task_id" : "source_milestone_id",
         sourceIds: children.map((c) => c.id),
-        deleteFn: () => (isQueue ? deleteQueueProject(r.project.id) : deleteDeadlineProject(r.project.id)),
+        deleteFn: async () => {
+          await (isQueue ? deleteQueueProject(r.project.id) : deleteDeadlineProject(r.project.id));
+          await deleteTaskNumber(r.project.level1_number);
+        },
       });
       if (ok) {
         openDetailKeys.delete(r.key);
@@ -744,27 +781,39 @@ function buildDetailPanel(r, locked) {
     const template = r.project;
     wrap.innerHTML = `
       <div class="inline-form">
+        <label>标题 <input type="text" class="d-title" value="${inst.title ?? ""}" style="min-width:220px" /></label>
+        <label>最终交付物 <input type="text" class="d-deliverable" value="${inst.target_deliverable ?? ""}" style="min-width:200px" /></label>
         <span>应完成日期：${inst.due_date}（按编号算法自动生成，不可手改）</span>
+      </div>
+      <div class="inline-form" style="margin-top:6px;">
         <label>实际完成时间 <input type="date" class="d-actual" value="${inst.actual_completion_date ?? ""}" /></label>
         <span>状态：${inst.status}</span>
         ${inst.status !== "stopped" ? `<button type="button" class="secondary d-terminate">标记中止</button>` : ""}
         <button type="button" class="secondary d-delete">删除此实例</button>
       </div>
       <div class="inline-form" style="margin-top:6px;border-top:1px dashed #ccc;padding-top:6px;">
-        <strong>所属循环任务设置（会影响这个模板下的所有实例）：</strong>
-        <label>标题 <input type="text" class="p-title" value="${template.title}" style="min-width:180px" /></label>
+        <strong>所属循环任务设置（会影响这个模板下"生成下一个实例"时的默认命名，不会改已有实例）：</strong>
+        <label>动词前缀 <input type="text" class="p-title-verb" value="${template.title_verb ?? ""}" placeholder="如：制作" style="width:100px" /></label>
+        <label>名词部分(交付物基础名) <input type="text" class="p-title-noun" value="${template.title_noun ?? ""}" placeholder="如：周例会PPT" style="min-width:160px" /></label>
         <select class="p-module">${moduleOptionsHtml(template.module_id)}</select>
         <input type="text" class="p-owner" value="${template.owner ?? ""}" placeholder="责任人" />
         <select class="p-frequency">
           ${["weekly", "monthly", "custom"].map((f) => `<option value="${f}" ${f === template.frequency ? "selected" : ""}>${f}</option>`).join("")}
         </select>
-        <input type="text" class="p-deliverable" value="${template.deliverable_template ?? ""}" placeholder="最终目标交付物" style="min-width:180px" />
         <select class="p-status">
           ${["active", "completed", "paused"].map((s) => `<option value="${s}" ${s === template.status ? "selected" : ""}>${s}</option>`).join("")}
         </select>
         <button type="button" class="secondary d-delete-template">删除整个循环任务</button>
       </div>
     `;
+    wrap.querySelector(".d-title").addEventListener("change", async (e) => {
+      await updateRecurringInstance(inst.id, { title: e.target.value.trim() || null });
+      await reloadAll();
+    });
+    wrap.querySelector(".d-deliverable").addEventListener("change", async (e) => {
+      await updateRecurringInstance(inst.id, { target_deliverable: e.target.value.trim() || null });
+      await reloadAll();
+    });
     wrap.querySelector(".d-actual").addEventListener("change", async (e) => {
       await updateRecurringInstance(inst.id, { actual_completion_date: e.target.value || null });
       await reloadAll();
@@ -789,32 +838,38 @@ function buildDetailPanel(r, locked) {
         await reloadAll();
       }
     });
-    const titleInput = wrap.querySelector(".p-title");
+    const titleVerbInput = wrap.querySelector(".p-title-verb");
+    const titleNounInput = wrap.querySelector(".p-title-noun");
     const moduleSelect = wrap.querySelector(".p-module");
     const ownerInput = wrap.querySelector(".p-owner");
     const frequencySelect = wrap.querySelector(".p-frequency");
-    const deliverableInput = wrap.querySelector(".p-deliverable");
     const statusSelect = wrap.querySelector(".p-status");
     const saveTemplate = async () => {
+      const titleVerb = titleVerbInput.value.trim();
+      const titleNoun = titleNounInput.value.trim();
       await updateRecurringTemplate(template.id, {
-        title: titleInput.value.trim(),
+        title: titleVerb + titleNoun,
+        title_verb: titleVerb,
+        title_noun: titleNoun,
         module_id: moduleSelect.value || null,
         owner: ownerInput.value.trim() || null,
         frequency: frequencySelect.value,
-        deliverable_template: deliverableInput.value.trim() || null,
         status: statusSelect.value,
       });
       await reloadAll();
     };
-    [titleInput, moduleSelect, ownerInput, frequencySelect, deliverableInput, statusSelect].forEach((el) =>
+    [titleVerbInput, titleNounInput, moduleSelect, ownerInput, frequencySelect, statusSelect].forEach((el) =>
       el.addEventListener("change", saveTemplate)
     );
     wrap.querySelector(".d-delete-template").addEventListener("click", async () => {
       const ok = await confirmAndCascadeDelete({
-        label: `循环任务"${template.title}"（含其下全部${template.recurring_task_instances.length}个实例）`,
+        label: `循环任务"${template.title}"（含其下全部${template.recurring_task_instances.length}个实例，编号${template.level1_number}会被释放可复用）`,
         sourceColumn: "source_recurring_instance_id",
         sourceIds: template.recurring_task_instances.map((i) => i.id),
-        deleteFn: () => deleteRecurringTemplate(template.id),
+        deleteFn: async () => {
+          await deleteRecurringTemplate(template.id);
+          await deleteTaskNumber(template.level1_number);
+        },
       });
       if (ok) {
         openDetailKeys.delete(r.key);

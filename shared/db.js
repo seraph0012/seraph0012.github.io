@@ -68,14 +68,12 @@ export const setTaskNumberOwner = (level1Number, owningId) =>
     .update({ owning_id: owningId })
     .eq("level1_number", level1Number)
     .then(unwrap);
-// 编号一旦分配永不复用，所以删除已编号的任务不能删registry里的记录，只能标记retired_at——
-// 保留"这个号曾经分配给过谁"的痕迹，避免以后编号对不上历史PPT
-export const retireTaskNumber = (level1Number) =>
-  supabase
-    .from("task_number_registry")
-    .update({ retired_at: new Date().toISOString() })
-    .eq("level1_number", level1Number)
-    .then(unwrap);
+// 2026-07-10用户明确要求：删除整个项目/模板时编号要真正释放、可以复用，不是"永久占用"。
+// 硬删除registry行(而不是只标记retired_at)——调用方必须先删掉引用这个level1_number的
+// 项目/模板行(queue_projects/deadline_projects/recurring_task_templates的level1_number
+// 列是FK，项目行还在的话这里会被约束挡住，顺序不能反)。
+export const deleteTaskNumber = (level1Number) =>
+  supabase.from("task_number_registry").delete().eq("level1_number", level1Number).then(unwrap);
 
 // ---- queue_projects (类型A) ----
 export const listQueueProjects = () =>
@@ -276,7 +274,7 @@ export const listRecurringInstancesByIds = (ids) =>
     : supabase
         .from("recurring_task_instances")
         .select(
-          "id, template_id, full_number, level2_number, level3_number, due_date, status, recurring_task_templates(title, level1_number, module_id, owner, deliverable_template)"
+          "id, template_id, full_number, level2_number, level3_number, due_date, status, title, target_deliverable, recurring_task_templates(title, level1_number, module_id, owner)"
         )
         .in("id", ids)
         .then(unwrap);

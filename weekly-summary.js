@@ -335,7 +335,7 @@ async function populateUnplannedOptions() {
       source_id: inst.id,
       module_id: inst.recurring_task_templates.module_id,
       owner: inst.recurring_task_templates.owner,
-      deliverable_this_week: inst.recurring_task_templates.deliverable_template || "",
+      deliverable_this_week: inst.target_deliverable || "",
     });
   }
 
