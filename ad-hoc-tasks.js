@@ -4,9 +4,11 @@ import {
   listAdHocTasks,
   createAdHocTask,
   updateAdHocTask,
+  deleteAdHocTask,
   listMeetingWeeks,
   claimTaskNumber,
   setTaskNumberOwner,
+  retireTaskNumber,
   suggestNextTaskNumber,
   createQueueProject,
   createDeadlineProject,
@@ -161,7 +163,10 @@ async function loadTable() {
       <td><input type="date" class="f-end" value="${t.actual_end ?? ""}" /></td>
       <td>${t.status}</td>
       <td>${promotionLabel(t)}</td>
-      <td>${t.promoted_to_type ? "" : `<button type="button" class="secondary f-promote">转正</button>`}</td>
+      <td>
+        ${t.promoted_to_type ? "" : `<button type="button" class="secondary f-promote">转正</button>`}
+        <button type="button" class="secondary f-delete">删除</button>
+      </td>
     `;
     tr.querySelector(".f-end").addEventListener("change", async (e) => {
       await updateAdHocTask(t.id, { actual_end: e.target.value || null });
@@ -173,12 +178,22 @@ async function loadTable() {
         const promoteTr = document.createElement("tr");
         promoteTr.className = "promote-row";
         const td = document.createElement("td");
-        td.colSpan = 6;
+        td.colSpan = 7;
         td.appendChild(renderPromoteForm(t));
         promoteTr.appendChild(td);
         tr.after(promoteTr);
       });
     }
+    tr.querySelector(".f-delete").addEventListener("click", async () => {
+      if (!confirm(`确定删除计划外任务"${t.title}"？此操作不可撤销。`)) return;
+      try {
+        if (t.level1_number != null) await retireTaskNumber(t.level1_number);
+        await deleteAdHocTask(t.id);
+        await loadTable();
+      } catch (err) {
+        alert(`删除失败：${err.message}`);
+      }
+    });
     tbody.appendChild(tr);
   }
 }

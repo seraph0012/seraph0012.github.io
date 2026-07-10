@@ -60,6 +60,14 @@ export const setTaskNumberOwner = (level1Number, owningId) =>
     .update({ owning_id: owningId })
     .eq("level1_number", level1Number)
     .then(unwrap);
+// 编号一旦分配永不复用，所以删除已编号的任务不能删registry里的记录，只能标记retired_at——
+// 保留"这个号曾经分配给过谁"的痕迹，避免以后编号对不上历史PPT
+export const retireTaskNumber = (level1Number) =>
+  supabase
+    .from("task_number_registry")
+    .update({ retired_at: new Date().toISOString() })
+    .eq("level1_number", level1Number)
+    .then(unwrap);
 
 // ---- queue_projects (类型A) ----
 export const listQueueProjects = () =>
@@ -233,3 +241,5 @@ export const createAdHocTask = (row) =>
   supabase.from("ad_hoc_tasks").insert(row).select().single().then(unwrap);
 export const updateAdHocTask = (id, patch) =>
   supabase.from("ad_hoc_tasks").update(patch).eq("id", id).select().single().then(unwrap);
+export const deleteAdHocTask = (id) =>
+  supabase.from("ad_hoc_tasks").delete().eq("id", id).then(unwrap);
