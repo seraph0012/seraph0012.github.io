@@ -79,13 +79,13 @@ export const deleteTaskNumber = (level1Number) =>
 export const listQueueProjects = () =>
   supabase
     .from("queue_projects")
-    .select("*, queue_project_tasks!queue_project_tasks_project_id_fkey(*)")
+    .select("*, queue_project_tasks!queue_project_tasks_project_id_fkey(*), queue_project_task_groups(*)")
     .order("level1_number")
     .then(unwrap);
 export const getQueueProject = (id) =>
   supabase
     .from("queue_projects")
-    .select("*, queue_project_tasks!queue_project_tasks_project_id_fkey(*)")
+    .select("*, queue_project_tasks!queue_project_tasks_project_id_fkey(*), queue_project_task_groups(*)")
     .eq("id", id)
     .single()
     .then(unwrap);
@@ -112,18 +112,27 @@ export const updateQueueProjectTask = (id, patch) =>
   supabase.from("queue_project_tasks").update(patch).eq("id", id).select().single().then(unwrap);
 export const deleteQueueProjectTask = (id) =>
   supabase.from("queue_project_tasks").delete().eq("id", id).then(unwrap);
+// 二级任务标题——只有"这个二级下还有三级子任务"时才需要(二级本身不再单独成一行，没地方
+// 存自己的title)，2026-07-10用户明确要求有1/2/3级的任务每一级都要有标题
+export const upsertQueueTaskGroup = (projectId, level2Number, title) =>
+  supabase
+    .from("queue_project_task_groups")
+    .upsert({ project_id: projectId, wbs_level2_number: level2Number, title }, { onConflict: "project_id,wbs_level2_number" })
+    .select()
+    .single()
+    .then(unwrap);
 
 // ---- deadline_projects (类型B) ----
 export const listDeadlineProjects = () =>
   supabase
     .from("deadline_projects")
-    .select("*, deadline_milestones(*)")
+    .select("*, deadline_milestones(*), deadline_milestone_groups(*)")
     .order("deadline_date")
     .then(unwrap);
 export const getDeadlineProject = (id) =>
   supabase
     .from("deadline_projects")
-    .select("*, deadline_milestones(*)")
+    .select("*, deadline_milestones(*), deadline_milestone_groups(*)")
     .eq("id", id)
     .single()
     .then(unwrap);
@@ -150,6 +159,13 @@ export const updateMilestone = (id, patch) =>
   supabase.from("deadline_milestones").update(patch).eq("id", id).select().single().then(unwrap);
 export const deleteMilestone = (id) =>
   supabase.from("deadline_milestones").delete().eq("id", id).then(unwrap);
+export const upsertMilestoneGroup = (projectId, level2Number, title) =>
+  supabase
+    .from("deadline_milestone_groups")
+    .upsert({ project_id: projectId, wbs_level2_number: level2Number, title }, { onConflict: "project_id,wbs_level2_number" })
+    .select()
+    .single()
+    .then(unwrap);
 
 // ---- recurring_task_templates / instances (类型C) ----
 export const listRecurringTemplates = () =>

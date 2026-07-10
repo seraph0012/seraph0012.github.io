@@ -11,6 +11,7 @@ import {
   addQueueProjectTask,
   updateQueueProjectTask,
   deleteQueueProjectTask,
+  upsertQueueTaskGroup,
   listDeadlineProjects,
   createDeadlineProject,
   updateDeadlineProject,
@@ -18,6 +19,7 @@ import {
   addMilestone,
   updateMilestone,
   deleteMilestone,
+  upsertMilestoneGroup,
   listRecurringTemplates,
   createRecurringTemplate,
   updateRecurringTemplate,
@@ -212,6 +214,8 @@ function onLevel2Change(sel) {
   const isNone = val === "__none__";
   const level3Input = document.getElementById("wbs-level3");
   document.getElementById("wbs-level2-new-wrap").hidden = !isNewLevel2;
+  document.getElementById("wbs-level2-title-wrap").hidden = !isNewLevel2;
+  if (isNewLevel2) document.getElementById("wbs-level2-title").value = "";
   level3Input.closest("label").hidden = isNone;
   if (isNone) return;
   if (sel.isNew) {
@@ -318,6 +322,8 @@ async function createQueueOrDeadlineLeaf(sel) {
   const moduleId = document.getElementById("leaf-module").value || null;
   const owner = document.getElementById("leaf-owner").value.trim();
   const level2Select = document.getElementById("wbs-level2-select");
+  const isNewLevel2Group = level2Select.value === "__new__";
+  const level2Title = document.getElementById("wbs-level2-title").value.trim();
   let level2 = null;
   let level3 = null;
   if (level2Select.value !== "__none__") {
@@ -327,6 +333,12 @@ async function createQueueOrDeadlineLeaf(sel) {
   }
   if (!title || !deliverable || !completionDate || !moduleId || !owner) {
     throw new Error("任务标题/模块/责任人/最终目标交付物/最终计划完成时间都是必填项");
+  }
+  // 有1、2、3级的任务每一级都要有标题(2026-07-10用户明确要求)——新建一个从没出现过的
+  // 二级编号、同时又填了三级编号，说明这是在从头搭一个真正的3级任务，二级本身也要有标题
+  // (二级不再是叶子、不会展示自己的title列，只能在这里/或者建完后去表格里的二级分组行补)
+  if (isNewLevel2Group && level3 != null && !level2Title) {
+    throw new Error("这个二级任务下有三级子任务，必须填写二级标题");
   }
 
   let projectId;
@@ -380,6 +392,9 @@ async function createQueueOrDeadlineLeaf(sel) {
       target_deliverable: deliverable,
       planned_date: completionDate,
     });
+  }
+  if (isNewLevel2Group && level3 != null && level2Title) {
+    await (sel.type === "queue" ? upsertQueueTaskGroup(projectId, level2, level2Title) : upsertMilestoneGroup(projectId, level2, level2Title));
   }
 }
 
@@ -466,6 +481,7 @@ document.getElementById("create-form").addEventListener("submit", async (e) => {
     document.getElementById("leaf-title").value = "";
     document.getElementById("leaf-deliverable").value = "";
     document.getElementById("leaf-completion-date").value = "";
+    document.getElementById("wbs-level2-title").value = "";
     document.getElementById("recurring-title-verb").value = "";
     document.getElementById("recurring-title-noun").value = "";
     await onOwnerChange();
@@ -538,7 +554,16 @@ function buildDisplayRows() {
       if (g.items.length === 1 && g.items[0].wbs_level3_number == null) {
         displayRows.push(makeLeafRow("queue", "顺序队列", p, g.items[0], wbsLabel(p.level1_number, g.level2, null)));
       } else {
-        displayRows.push({ kind: "level2-header", label: `${p.level1_number}.${g.level2}` });
+        const groupTitle = (p.queue_project_task_groups || []).find((x) => x.wbs_level2_number === g.level2)?.title || "";
+        displayRows.push({
+          kind: "level2-header",
+          label: `${p.level1_number}.${g.level2}`,
+          editableTitle: true,
+          type: "queue",
+          project: p,
+          level2: g.level2,
+          groupTitle,
+        });
         for (const t of g.items) {
           displayRows.push(makeLeafRow("queue", "顺序队列", p, t, wbsLabel(p.level1_number, g.level2, t.wbs_level3_number)));
         }
@@ -555,7 +580,16 @@ function buildDisplayRows() {
       if (g.items.length === 1 && g.items[0].wbs_level3_number == null) {
         displayRows.push(makeLeafRow("deadline", "截止日期", p, g.items[0], wbsLabel(p.level1_number, g.level2, null)));
       } else {
-        displayRows.push({ kind: "level2-header", label: `${p.level1_number}.${g.level2}` });
+        const groupTitle = (p.deadline_milestone_groups || []).find((x) => x.wbs_level2_number === g.level2)?.title || "";
+        displayRows.push({
+          kind: "level2-header",
+          label: `${p.level1_number}.${g.level2}`,
+          editableTitle: true,
+          type: "deadline",
+          project: p,
+          level2: g.level2,
+          groupTitle,
+        });
         for (const m of g.items) {
           displayRows.push(makeLeafRow("deadline", "截止日期", p, m, wbsLabel(p.level1_number, g.level2, m.wbs_level3_number)));
         }
@@ -915,7 +949,22 @@ function renderTaskTable() {
     }
     if (r.kind === "level2-header") {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td colspan="11" style="padding-left:2em;color:#666;">${r.label}</td>`;
+      if (r.editableTitle) {
+        // 二级本身没有title列(有三级子任务时二级不单独成一行)，标题存在
+        // queue_project_task_groups/deadline_milestone_groups里，直接在分组标题行内编辑——
+        // 这样新建时漏填、或者历史遗留没有标题的二级分组，都能在这里直接补上
+        // (2026-07-10用户明确要求有1/2/3级的任务每一级都要有标题)
+        tr.innerHTML = `<td colspan="11" style="padding-left:2em;color:#666;">${r.label}
+          <input type="text" class="level2-title-input" value="${r.groupTitle}" placeholder="二级标题(必填)" style="width:220px" />
+        </td>`;
+        tr.querySelector(".level2-title-input").addEventListener("change", async (e) => {
+          const upsertFn = r.type === "queue" ? upsertQueueTaskGroup : upsertMilestoneGroup;
+          await upsertFn(r.project.id, r.level2, e.target.value.trim());
+          await reloadAll();
+        });
+      } else {
+        tr.innerHTML = `<td colspan="11" style="padding-left:2em;color:#666;">${r.label}</td>`;
+      }
       tbody.appendChild(tr);
       continue;
     }
