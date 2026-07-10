@@ -10,42 +10,31 @@
   <nav id="app-nav"></nav>
 
   <h1>任务管理</h1>
-  <p>所有任务在这里统一新建：先选类型，再选归属项目（或新建一个），标题/最终目标交付物/最终计划完成时间是每个任务都必填的字段。
-  "计划外/计划内"不用在这里选，那是总结页面根据本周计划自动判定的。</p>
+  <p>所有任务（顺序队列/截止日期/循环任务）统一在下面一张表里管理。先选"归属"——选已有项目/循环任务就是给它加一个新任务/生成下一个实例，选"+新建"就是从头建一个。
+  标题/最终目标交付物/最终计划完成时间是每个任务都必填的字段。类型专属的设置(项目分类/状态/循环任务的模板信息等)在每行"详情"里。</p>
 
   <section>
     <h2>新建任务</h2>
     <form id="create-form" class="inline-form">
-      <label>类型
-        <select id="type-select">
-          <option value="queue">顺序队列</option>
-          <option value="deadline">截止日期</option>
-          <option value="recurring">循环任务</option>
-        </select>
-      </label>
+      <label>归属 <select id="owner-select"></select></label>
 
-      <span id="project-picker-wrap">
-        <label>归属项目 <select id="project-select"></select></label>
-      </span>
-
-      <span id="new-project-fields">
-        <label>项目编号 <input type="number" id="new-project-number" min="1" style="width:5em" /></label>
-        <input type="text" id="new-project-title" placeholder="项目名" style="min-width:200px" />
-        <input type="text" id="new-project-category" placeholder="分类(可选，如 科研项目)" />
+      <span id="new-project-fields" hidden>
+        <label>编号 <input type="number" id="new-project-number" min="1" style="width:5em" /></label>
+        <input type="text" id="new-project-title" placeholder="项目/任务标题" style="min-width:200px" />
+        <input type="text" id="new-project-category" placeholder="分类(可选，仅顺序队列)" />
         <label id="new-project-deadline-wrap" hidden>项目截止日期 <input type="date" id="new-project-deadline" /></label>
       </span>
 
-      <span id="leaf-fields">
-        <label>WBS二级编号 <input type="number" id="wbs-level2" min="1" style="width:5em" /></label>
-        <label>WBS三级编号(可选) <input type="number" id="wbs-level3" min="1" style="width:5em" /></label>
-        <input type="text" id="leaf-title" placeholder="任务标题" style="min-width:220px" />
+      <span id="leaf-fields" hidden>
+        <label>二级编号 <select id="wbs-level2-select"></select></label>
+        <label id="wbs-level2-new-wrap" hidden>新二级编号 <input type="number" id="wbs-level2-new" min="1" style="width:5em" /></label>
+        <label>三级编号 <input type="number" id="wbs-level3" min="1" style="width:5em" /></label>
+        <input type="text" id="leaf-title" placeholder="任务标题" style="min-width:200px" />
         <input type="text" id="leaf-deliverable" placeholder="最终目标交付物(必填)" style="min-width:200px" />
         <label>最终计划完成时间 <input type="date" id="leaf-completion-date" /></label>
       </span>
 
-      <span id="recurring-fields" hidden>
-        <label>编号 <input type="number" id="recurring-number" min="1" style="width:5em" /></label>
-        <input type="text" id="recurring-title" placeholder="任务标题" style="min-width:200px" />
+      <span id="recurring-new-fields" hidden>
         <select id="recurring-module"><option value="">(模块可选)</option></select>
         <input type="text" id="recurring-owner" placeholder="责任人(可选)" />
         <select id="recurring-frequency">
@@ -53,28 +42,39 @@
           <option value="monthly">monthly</option>
           <option value="custom">custom</option>
         </select>
-        <label>起始例会周 <select id="recurring-start-week"></select></label>
         <input type="text" id="recurring-deliverable" placeholder="最终目标交付物(必填)" style="min-width:200px" />
+        <label>第一次的例会周 <select id="recurring-first-week"></select></label>
       </span>
 
-      <button type="submit">新建</button>
+      <span id="recurring-instance-fields" hidden>
+        <span id="recurring-instance-preview" class="status"></span>
+      </span>
+
+      <button type="submit" id="create-submit-btn">新建</button>
     </form>
     <p id="create-result" class="status"></p>
   </section>
 
   <section>
-    <h2>顺序队列任务</h2>
-    <div id="queue-list"></div>
-  </section>
-
-  <section>
-    <h2>截止日期任务</h2>
-    <div id="deadline-list"></div>
-  </section>
-
-  <section>
-    <h2>循环任务</h2>
-    <div id="recurring-list"></div>
+    <h2>全部任务</h2>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>编号</th>
+          <th>类型</th>
+          <th>所属项目/任务</th>
+          <th>标题</th>
+          <th>最终交付物</th>
+          <th>最终计划完成时间</th>
+          <th>实际完成</th>
+          <th>状态</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="tasks-tbody"></tbody>
+    </table>
+    </div>
   </section>
 
   <script type="module" src="./tasks.js"></script>

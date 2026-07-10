@@ -54,6 +54,17 @@ function findPreviousWeek(week) {
   return earlier.reduce((a, b) => (a.natural_week_start > b.natural_week_start ? a : b));
 }
 
+// 顺序队列项目里"当前应该推进的任务"：按WBS编号(二级.三级)顺序排好，取第一个还没
+// done/skipped的——不再是手动维护的current_task_id指针(2026-07-10跟用户确认去掉这个字段，
+// 顺序本来就该按编号来，不需要额外的指针/排序字段)
+function currentQueueTask(project) {
+  const sorted = [...project.queue_project_tasks].sort((a, b) => {
+    if (a.wbs_level2_number !== b.wbs_level2_number) return a.wbs_level2_number - b.wbs_level2_number;
+    return (a.wbs_level3_number ?? 0) - (b.wbs_level3_number ?? 0);
+  });
+  return sorted.find((t) => t.status !== "done" && t.status !== "skipped");
+}
+
 async function computeCarryOverSet(prevWeek) {
   if (!prevWeek) return new Set();
   const prevSummary = await listWeeklyTaskEntries(prevWeek.id, "summary");
@@ -80,9 +91,11 @@ async function generateCandidatePool(week) {
   const raw = [];
 
   for (const p of queueProjects) {
-    if (p.status !== "active" || !p.current_task_id) continue;
-    const task = p.queue_project_tasks.find((t) => t.id === p.current_task_id);
-    if (!task || task.status === "done" || task.status === "skipped") continue;
+    if (p.status !== "active") continue;
+    // "当前任务"不再是手动维护的指针字段，改成按WBS编号顺序(二级.三级)自动判断——
+    // 项目里第一个还没done/skipped的任务，就是当前应该推进的那个
+    const task = currentQueueTask(p);
+    if (!task) continue;
     raw.push({
       source_type: "queue_task",
       source_id: task.id,

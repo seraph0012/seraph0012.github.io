@@ -147,7 +147,11 @@ export const deleteMilestone = (id) =>
 
 // ---- recurring_task_templates / instances (类型C) ----
 export const listRecurringTemplates = () =>
-  supabase.from("recurring_task_templates").select("*").order("level1_number").then(unwrap);
+  supabase
+    .from("recurring_task_templates")
+    .select("*, recurring_task_instances(*)")
+    .order("level1_number")
+    .then(unwrap);
 export const getRecurringTemplate = (id) =>
   supabase
     .from("recurring_task_templates")
