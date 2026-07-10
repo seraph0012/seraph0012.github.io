@@ -104,6 +104,8 @@ export const addQueueProjectTask = (projectId, task) =>
     .then(unwrap);
 export const updateQueueProjectTask = (id, patch) =>
   supabase.from("queue_project_tasks").update(patch).eq("id", id).select().single().then(unwrap);
+export const deleteQueueProjectTask = (id) =>
+  supabase.from("queue_project_tasks").delete().eq("id", id).then(unwrap);
 
 // ---- deadline_projects (类型B) ----
 export const listDeadlineProjects = () =>
@@ -129,6 +131,8 @@ export const updateDeadlineProject = (id, patch) =>
     .select()
     .single()
     .then(unwrap);
+export const deleteDeadlineProject = (id) =>
+  supabase.from("deadline_projects").delete().eq("id", id).then(unwrap);
 export const addMilestone = (projectId, milestone) =>
   supabase
     .from("deadline_milestones")
@@ -138,6 +142,8 @@ export const addMilestone = (projectId, milestone) =>
     .then(unwrap);
 export const updateMilestone = (id, patch) =>
   supabase.from("deadline_milestones").update(patch).eq("id", id).select().single().then(unwrap);
+export const deleteMilestone = (id) =>
+  supabase.from("deadline_milestones").delete().eq("id", id).then(unwrap);
 
 // ---- recurring_task_templates / instances (类型C) ----
 export const listRecurringTemplates = () =>
@@ -159,6 +165,8 @@ export const updateRecurringTemplate = (id, patch) =>
     .select()
     .single()
     .then(unwrap);
+export const deleteRecurringTemplate = (id) =>
+  supabase.from("recurring_task_templates").delete().eq("id", id).then(unwrap);
 export const addRecurringInstance = (templateId, instance) =>
   supabase
     .from("recurring_task_instances")
@@ -168,6 +176,8 @@ export const addRecurringInstance = (templateId, instance) =>
     .then(unwrap);
 export const updateRecurringInstance = (id, patch) =>
   supabase.from("recurring_task_instances").update(patch).eq("id", id).select().single().then(unwrap);
+export const deleteRecurringInstance = (id) =>
+  supabase.from("recurring_task_instances").delete().eq("id", id).then(unwrap);
 
 // ---- weekly_task_entries ----
 export const listWeeklyTaskEntries = (meetingWeekId, appearsIn) =>

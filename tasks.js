@@ -6,22 +6,31 @@ import {
   listQueueProjects,
   createQueueProject,
   updateQueueProject,
+  deleteQueueProject,
   addQueueProjectTask,
   updateQueueProjectTask,
+  deleteQueueProjectTask,
   listDeadlineProjects,
   createDeadlineProject,
   updateDeadlineProject,
+  deleteDeadlineProject,
   addMilestone,
   updateMilestone,
+  deleteMilestone,
   listRecurringTemplates,
   getRecurringTemplate,
   createRecurringTemplate,
+  updateRecurringTemplate,
+  deleteRecurringTemplate,
   addRecurringInstance,
   updateRecurringInstance,
+  deleteRecurringInstance,
   claimTaskNumber,
   setTaskNumberOwner,
   suggestNextTaskNumber,
   hasBeenPlanned,
+  countWeeklyTaskEntriesForSource,
+  deleteWeeklyTaskEntriesForSource,
 } from "./shared/db.js";
 
 const session = await requireAuth();
@@ -44,10 +53,49 @@ function wbsLabel(level1, level2, level3) {
   return level3 != null ? `${level1}.${level2}.${level3}` : `${level1}.${level2}`;
 }
 
+function moduleOptionsHtml(selectedId) {
+  return (
+    `<option value="">(未分类)</option>` +
+    allModules.map((m) => `<option value="${m.id}" ${m.id === selectedId ? "selected" : ""}>${m.name}</option>`).join("")
+  );
+}
+
+function weekOptionsHtml(selectedId) {
+  return allWeeksRaw
+    .map((w) => `<option value="${w.id}" ${w.id === selectedId ? "selected" : ""}>${w.natural_week_start}（例会${w.meeting_date}）</option>`)
+    .join("");
+}
+
 function lockedDateHtml(date, note) {
   return `<span class="locked-date">🔒 ${date ?? ""}</span>${
     note ? `<br /><span class="badge">订正：${note}</span>` : ""
   } <button type="button" class="secondary f-amend">订正</button>`;
+}
+
+// 状态列只读展示——唯一来源是weekly-summary.js填完成情况时自动同步过来(syncSourceStatus)，
+// 这里不能自由改，避免跟总结历史对不上。"标记中止"是唯一允许在这个页面直接触发的状态变更，
+// 用于不想等到总结周期就直接终止一个任务的场景。
+function statusBadgeHtml(status) {
+  return `<span class="readonly-col">${status}</span>`;
+}
+
+// 删除一个（或一批）源任务前，先把引用它们的weekly_task_entries清掉——这些FK没有
+// ON DELETE CASCADE(历史周记录不该被源任务删除静默带走)，直接删源任务会被DB挡住。
+// 2026-07-10发现的真实case：用户想清空不合格的测试任务重新填，但每个任务背后可能已经
+// 挂着计划/总结条目，需要一并处理，跟之前ad_hoc_tasks删除时用的是同一套模式。
+async function confirmAndCascadeDelete({ label, sourceColumn, sourceIds, deleteFn }) {
+  let total = 0;
+  for (const id of sourceIds) total += await countWeeklyTaskEntriesForSource(sourceColumn, id);
+  const warn =
+    total > 0
+      ? `\n\n注意：还有${total}条计划/总结条目引用着，会一并删除（如果已经生成过PPT，这些历史记录也会消失）。`
+      : "";
+  if (!confirm(`确定删除"${label}"？此操作不可撤销。${warn}`)) return false;
+  for (const id of sourceIds) {
+    await deleteWeeklyTaskEntriesForSource(sourceColumn, id);
+  }
+  await deleteFn();
+  return true;
 }
 
 // ---------------- 新建任务表单 ----------------
@@ -245,7 +293,7 @@ async function renderQueueList() {
     const block = document.createElement("div");
     block.className = "project-block";
     block.innerHTML = `
-      <h3>[${p.level1_number}] ${p.title}</h3>
+      <h3>[${p.level1_number}] ${p.title} <button type="button" class="secondary f-delete-project">删除项目</button></h3>
       <form class="inline-form proj-form">
         <label>分类 <input type="text" name="category" value="${p.category ?? ""}" style="width:10em" /></label>
         <label>状态
@@ -258,11 +306,20 @@ async function renderQueueList() {
       </form>
       <div class="table-scroll">
       <table>
-        <thead><tr><th>编号</th><th>标题</th><th>最终交付物</th><th>最终计划完成时间</th><th>实际完成</th><th>状态</th><th>指针</th><th>顺序</th></tr></thead>
+        <thead><tr><th>编号</th><th>标题</th><th>最终交付物</th><th>最终计划完成时间</th><th>实际完成</th><th>状态</th><th>指针</th><th>顺序</th><th></th></tr></thead>
         <tbody></tbody>
       </table>
       </div>
     `;
+    block.querySelector(".f-delete-project").addEventListener("click", async () => {
+      const ok = await confirmAndCascadeDelete({
+        label: `项目"${p.title}"（含其下全部${p.queue_project_tasks.length}个任务）`,
+        sourceColumn: "source_queue_task_id",
+        sourceIds: p.queue_project_tasks.map((t) => t.id),
+        deleteFn: () => deleteQueueProject(p.id),
+      });
+      if (ok) await reloadAll();
+    });
     const projForm = block.querySelector(".proj-form");
     projForm.querySelectorAll("input, select").forEach((el) =>
       el.addEventListener("change", async () => {
@@ -287,18 +344,15 @@ async function renderQueueList() {
             : `<input type="date" class="f-completion" value="${t.planned_completion_date ?? ""}" />`
         }</td>
         <td>${t.actual_completion_date ?? ""}</td>
-        <td>
-          <select class="f-status">
-            ${["pending", "in_progress", "done", "skipped"]
-              .map((s) => `<option value="${s}" ${s === t.status ? "selected" : ""}>${s}</option>`)
-              .join("")}
-          </select>
-        </td>
+        <td>${statusBadgeHtml(t.status)}${
+          t.status !== "skipped" ? `<br /><button type="button" class="secondary f-terminate">标记中止</button>` : ""
+        }</td>
         <td>${isCurrent ? "★ 当前" : `<button type="button" class="secondary f-set-current">设为当前</button>`}</td>
         <td>
           <button type="button" class="secondary f-up" ${idx === 0 ? "disabled" : ""}>↑</button>
           <button type="button" class="secondary f-down" ${idx === tasks.length - 1 ? "disabled" : ""}>↓</button>
         </td>
+        <td><button type="button" class="secondary f-delete">删除</button></td>
       `;
       tr.querySelector(".f-title").addEventListener("change", async (e) => {
         await updateQueueProjectTask(t.id, { title: e.target.value });
@@ -324,9 +378,22 @@ async function renderQueueList() {
           await reloadAll();
         });
       }
-      tr.querySelector(".f-status").addEventListener("change", async (e) => {
-        await updateQueueProjectTask(t.id, { status: e.target.value });
-        await reloadAll();
+      const terminateBtn = tr.querySelector(".f-terminate");
+      if (terminateBtn) {
+        terminateBtn.addEventListener("click", async () => {
+          if (!confirm(`确定把任务"${t.title}"标记为中止？不用等总结周期，直接生效。`)) return;
+          await updateQueueProjectTask(t.id, { status: "skipped" });
+          await reloadAll();
+        });
+      }
+      tr.querySelector(".f-delete").addEventListener("click", async () => {
+        const ok = await confirmAndCascadeDelete({
+          label: `任务"${t.title}"`,
+          sourceColumn: "source_queue_task_id",
+          sourceIds: [t.id],
+          deleteFn: () => deleteQueueProjectTask(t.id),
+        });
+        if (ok) await reloadAll();
       });
       const setCurrentBtn = tr.querySelector(".f-set-current");
       if (setCurrentBtn) {
@@ -392,7 +459,7 @@ async function renderDeadlineList() {
     const block = document.createElement("div");
     block.className = "project-block";
     block.innerHTML = `
-      <h3>[${p.level1_number}] ${p.title}</h3>
+      <h3>[${p.level1_number}] ${p.title} <button type="button" class="secondary f-delete-project">删除项目</button></h3>
       ${p.delay_alert_active ? `<p class="status warn">⚠ ${p.delay_alert_note}</p>` : ""}
       <form class="inline-form proj-form">
         <label>截止日期 <input type="date" name="deadline_date" value="${p.deadline_date}" /></label>
@@ -405,11 +472,20 @@ async function renderDeadlineList() {
       </form>
       <div class="table-scroll">
       <table>
-        <thead><tr><th>编号</th><th>标题</th><th>最终交付物</th><th>最终计划完成时间</th><th>实际日期</th><th>状态</th></tr></thead>
+        <thead><tr><th>编号</th><th>标题</th><th>最终交付物</th><th>最终计划完成时间</th><th>实际日期</th><th>状态</th><th></th></tr></thead>
         <tbody></tbody>
       </table>
       </div>
     `;
+    block.querySelector(".f-delete-project").addEventListener("click", async () => {
+      const ok = await confirmAndCascadeDelete({
+        label: `项目"${p.title}"（含其下全部${p.deadline_milestones.length}个节点）`,
+        sourceColumn: "source_milestone_id",
+        sourceIds: p.deadline_milestones.map((m) => m.id),
+        deleteFn: () => deleteDeadlineProject(p.id),
+      });
+      if (ok) await reloadAll();
+    });
     const projForm = block.querySelector(".proj-form");
     projForm.querySelectorAll("input, select").forEach((el) =>
       el.addEventListener("change", async () => {
@@ -437,13 +513,10 @@ async function renderDeadlineList() {
             : `<input type="date" class="f-completion" value="${m.planned_date}" />`
         }</td>
         <td><input type="date" class="f-actual" value="${m.actual_date ?? ""}" /></td>
-        <td>
-          <select class="f-status">
-            ${["pending", "in_progress", "done", "stopped", "not_started"]
-              .map((s) => `<option value="${s}" ${s === m.status ? "selected" : ""}>${s}</option>`)
-              .join("")}
-          </select>
-        </td>
+        <td>${statusBadgeHtml(m.status)}${
+          m.status !== "stopped" ? `<br /><button type="button" class="secondary f-terminate">标记中止</button>` : ""
+        }</td>
+        <td><button type="button" class="secondary f-delete">删除</button></td>
       `;
       tr.querySelector(".f-title").addEventListener("change", async (e) => {
         await updateMilestone(m.id, { title: e.target.value });
@@ -473,9 +546,22 @@ async function renderDeadlineList() {
         await updateMilestone(m.id, { actual_date: e.target.value || null });
         await reloadAll();
       });
-      tr.querySelector(".f-status").addEventListener("change", async (e) => {
-        await updateMilestone(m.id, { status: e.target.value });
-        await reloadAll();
+      const terminateBtn = tr.querySelector(".f-terminate");
+      if (terminateBtn) {
+        terminateBtn.addEventListener("click", async () => {
+          if (!confirm(`确定把节点"${m.title}"标记为中止？不用等总结周期，直接生效。`)) return;
+          await updateMilestone(m.id, { status: "stopped" });
+          await reloadAll();
+        });
+      }
+      tr.querySelector(".f-delete").addEventListener("click", async () => {
+        const ok = await confirmAndCascadeDelete({
+          label: `节点"${m.title}"`,
+          sourceColumn: "source_milestone_id",
+          sourceIds: [m.id],
+          deleteFn: () => deleteMilestone(m.id),
+        });
+        if (ok) await reloadAll();
       });
       tbody.appendChild(tr);
     });
@@ -507,9 +593,16 @@ function computeNextNumber(template, instances, targetWeek) {
   return { level2: last.level2_number + 1, level3: 1 };
 }
 
-function nextUnusedWeek(instances) {
+// 候选周不能从全年第一周找起——要从模板自己的起始例会周(start_meeting_week_id)开始找，
+// 不然点"生成下一个实例"永远从年初开始，跟模板实际的开始时间对不上
+// (2026-07-10发现的真实bug，之前nextUnusedWeek完全没看start_meeting_week_id)
+function nextUnusedWeek(instances, template) {
   const usedWeekIds = new Set(instances.map((i) => i.meeting_week_id));
-  const sorted = [...allWeeks].sort((a, b) => new Date(a.natural_week_start) - new Date(b.natural_week_start));
+  const startWeek = allWeeksRaw.find((w) => w.id === template.start_meeting_week_id);
+  const startDate = startWeek ? new Date(startWeek.natural_week_start) : null;
+  const sorted = [...allWeeks]
+    .filter((w) => !startDate || new Date(w.natural_week_start) >= startDate)
+    .sort((a, b) => new Date(a.natural_week_start) - new Date(b.natural_week_start));
   return sorted.find((w) => !usedWeekIds.has(w.id));
 }
 
@@ -521,13 +614,50 @@ async function renderRecurringList() {
     block.className = "project-block";
     const isOpen = openInstanceTemplateIds.has(t.id);
     block.innerHTML = `
-      <h3>[${t.level1_number}] ${t.title}（${t.frequency}，${t.status}）</h3>
-      <p>最终目标交付物：${t.deliverable_template ?? ""}</p>
+      <h3>[${t.level1_number}] ${t.title} <button type="button" class="secondary f-delete-template">删除任务</button></h3>
+      <form class="inline-form proj-form">
+        <input type="text" name="title" value="${t.title}" style="min-width:200px" />
+        <select name="module_id">${moduleOptionsHtml(t.module_id)}</select>
+        <input type="text" name="owner" value="${t.owner ?? ""}" placeholder="责任人" />
+        <select name="frequency">
+          ${["weekly", "monthly", "custom"].map((f) => `<option value="${f}" ${f === t.frequency ? "selected" : ""}>${f}</option>`).join("")}
+        </select>
+        <label>起始例会周 <select name="start_meeting_week_id">${weekOptionsHtml(t.start_meeting_week_id)}</select></label>
+        <input type="text" name="deliverable_template" value="${t.deliverable_template ?? ""}" placeholder="最终目标交付物" style="min-width:180px" />
+        <select name="status">
+          ${["active", "completed", "paused"].map((s) => `<option value="${s}" ${s === t.status ? "selected" : ""}>${s}</option>`).join("")}
+        </select>
+      </form>
       <button type="button" class="secondary f-toggle">${isOpen ? "收起实例" : "展开实例"}</button>
       <button type="button" class="f-generate">生成下一个实例</button>
       <p class="f-generate-result status"></p>
       <div class="instances-wrap" ${isOpen ? "" : "hidden"}></div>
     `;
+    block.querySelector(".f-delete-template").addEventListener("click", async () => {
+      const full = await getRecurringTemplate(t.id);
+      const ok = await confirmAndCascadeDelete({
+        label: `循环任务"${t.title}"（含其下全部${full.recurring_task_instances.length}个实例）`,
+        sourceColumn: "source_recurring_instance_id",
+        sourceIds: full.recurring_task_instances.map((i) => i.id),
+        deleteFn: () => deleteRecurringTemplate(t.id),
+      });
+      if (ok) await reloadAll();
+    });
+    const projForm = block.querySelector(".proj-form");
+    projForm.querySelectorAll("input, select").forEach((el) =>
+      el.addEventListener("change", async () => {
+        await updateRecurringTemplate(t.id, {
+          title: projForm.title.value,
+          module_id: projForm.module_id.value || null,
+          owner: projForm.owner.value.trim() || null,
+          frequency: projForm.frequency.value,
+          start_meeting_week_id: Number(projForm.start_meeting_week_id.value),
+          deliverable_template: projForm.deliverable_template.value.trim() || null,
+          status: projForm.status.value,
+        });
+        await reloadAll();
+      })
+    );
     block.querySelector(".f-toggle").addEventListener("click", () => {
       if (openInstanceTemplateIds.has(t.id)) openInstanceTemplateIds.delete(t.id);
       else openInstanceTemplateIds.add(t.id);
@@ -536,7 +666,7 @@ async function renderRecurringList() {
     block.querySelector(".f-generate").addEventListener("click", async () => {
       const resultEl = block.querySelector(".f-generate-result");
       const full = await getRecurringTemplate(t.id);
-      const targetWeek = nextUnusedWeek(full.recurring_task_instances);
+      const targetWeek = nextUnusedWeek(full.recurring_task_instances, t);
       if (!targetWeek) {
         resultEl.textContent = "没有更多可用的例会周了，请先在例会日历里预生成更多周";
         resultEl.className = "status error";
@@ -572,7 +702,7 @@ async function renderRecurringList() {
       wrap.innerHTML = `
         <div class="table-scroll">
         <table>
-          <thead><tr><th>编号</th><th>对应例会周</th><th>应完成日期</th><th>实际完成</th><th>状态</th><th>用时(计划/实际)</th></tr></thead>
+          <thead><tr><th>编号</th><th>标题</th><th>最终交付物</th><th>对应例会周</th><th>应完成日期</th><th>实际完成</th><th>状态</th><th></th></tr></thead>
           <tbody></tbody>
         </table>
         </div>
@@ -585,30 +715,37 @@ async function renderRecurringList() {
         if (rowKey === highlightKey) tr.className = "row-highlight";
         tr.innerHTML = `
           <td>${inst.full_number}</td>
+          <td class="task-col readonly-col">${t.title}</td>
+          <td class="task-col readonly-col">${t.deliverable_template ?? ""}</td>
           <td>${week ? week.natural_week_start : inst.meeting_week_id}</td>
           <td>${inst.due_date}</td>
           <td><input type="date" class="f-actual" value="${inst.actual_completion_date ?? ""}" /></td>
-          <td>
-            <select class="f-status">
-              ${["not_started", "pending", "in_progress", "done", "stopped"]
-                .map((s) => `<option value="${s}" ${s === inst.status ? "selected" : ""}>${s}</option>`)
-                .join("")}
-            </select>
-          </td>
-          <td>
-            <input type="number" class="f-planned-hours" value="${inst.planned_hours ?? ""}" style="width:4em" step="0.5" /> /
-            <input type="number" class="f-actual-hours" value="${inst.actual_hours ?? ""}" style="width:4em" step="0.5" />
-          </td>
+          <td>${statusBadgeHtml(inst.status)}${
+            inst.status !== "stopped" ? `<br /><button type="button" class="secondary f-terminate">标记中止</button>` : ""
+          }</td>
+          <td><button type="button" class="secondary f-delete">删除</button></td>
         `;
-        const save = async () => {
-          await updateRecurringInstance(inst.id, {
-            actual_completion_date: tr.querySelector(".f-actual").value || null,
-            status: tr.querySelector(".f-status").value,
-            planned_hours: tr.querySelector(".f-planned-hours").value || null,
-            actual_hours: tr.querySelector(".f-actual-hours").value || null,
+        tr.querySelector(".f-actual").addEventListener("change", async (e) => {
+          await updateRecurringInstance(inst.id, { actual_completion_date: e.target.value || null });
+          await reloadAll();
+        });
+        const terminateBtn = tr.querySelector(".f-terminate");
+        if (terminateBtn) {
+          terminateBtn.addEventListener("click", async () => {
+            if (!confirm(`确定把实例"${inst.full_number}"标记为中止？不用等总结周期，直接生效。`)) return;
+            await updateRecurringInstance(inst.id, { status: "stopped" });
+            await reloadAll();
           });
-        };
-        tr.querySelectorAll("input, select").forEach((el) => el.addEventListener("change", save));
+        }
+        tr.querySelector(".f-delete").addEventListener("click", async () => {
+          const ok = await confirmAndCascadeDelete({
+            label: `实例"${inst.full_number}"`,
+            sourceColumn: "source_recurring_instance_id",
+            sourceIds: [inst.id],
+            deleteFn: () => deleteRecurringInstance(inst.id),
+          });
+          if (ok) await reloadAll();
+        });
         tbody.appendChild(tr);
       }
     }
