@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>周报自动化系统 — 生成本周PPT</title>
+  <link rel="stylesheet" href="./shared/style.css" />
+</head>
+<body>
+  <nav id="app-nav"></nav>
+
+  <h1>生成本周PPT</h1>
+  <p>
+    选一个例会周，点"生成PPT"：会读取该周的"本周计划"、上一周的"周工作总结"，直接改写模板文件
+    （<code>web/assets/weekly_report_template.pptx</code>）里对应的表格并下载，全程不离开浏览器。
+    生成前请确认对应周的计划/总结已经在"下周计划"/"本周总结"页面填好并锁定。
+  </p>
+  <p><strong>已知限制</strong>："未启动/中止工作"表目前始终为空——app里还没有把某条计划标记为"中止"写入
+  <code>appears_in='stopped'</code> 的入口，这部分仍需手动在PPT里补充。</p>
+
+  <section>
+    <h2>目标例会周</h2>
+    <form class="inline-form" onsubmit="return false">
+      <select name="week_id" id="week-select"></select>
+      <button type="button" id="generate-btn">生成PPT</button>
+    </form>
+    <p id="week-info" class="status"></p>
+    <p id="generate-result" class="status"></p>
+  </section>
+
+  <script type="module" src="./ppt-export.js"></script>
+</body>
+</html>

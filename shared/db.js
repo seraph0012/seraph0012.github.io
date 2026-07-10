@@ -28,14 +28,32 @@ export const deleteMeetingWeek = (id) =>
   supabase.from("meeting_weeks").delete().eq("id", id).then(unwrap);
 
 // ---- task_number_registry ----
-// 分配一个新的一级编号，返回整条 registry 记录（.level1_number 就是拿到的编号）
-export const claimTaskNumber = ({ task_type, title_snapshot, owning_table, owning_id }) =>
+// 分配一个新的一级编号，返回整条 registry 记录（.level1_number 就是拿到的编号）。
+// level1_number 可选传入显式值（创建表单里用户手动订正过默认预填的编号时）——不传则用
+// 数据库 nextval 默认值。
+export const claimTaskNumber = ({ task_type, title_snapshot, owning_table, owning_id, level1_number }) =>
   supabase
     .from("task_number_registry")
-    .insert({ task_type, title_snapshot, owning_table, owning_id })
+    .insert({
+      task_type,
+      title_snapshot,
+      owning_table,
+      owning_id,
+      ...(level1_number != null ? { level1_number } : {}),
+    })
     .select()
     .single()
     .then(unwrap);
+// 新建项目/任务表单预填"默认下一个编号"用：当前已分配过的最大一级编号+1（没有任何记录则从1开始）。
+// 只是UI默认值，用户可以手动改成任意未占用的编号（补历史数据时可能不按顺序）。
+export const suggestNextTaskNumber = () =>
+  supabase
+    .from("task_number_registry")
+    .select("level1_number")
+    .order("level1_number", { ascending: false })
+    .limit(1)
+    .then(unwrap)
+    .then((rows) => (rows[0]?.level1_number ?? 0) + 1);
 export const setTaskNumberOwner = (level1Number, owningId) =>
   supabase
     .from("task_number_registry")
@@ -179,7 +197,7 @@ export const listQueueProjectTasksByIds = (ids) =>
     : supabase
         .from("queue_project_tasks")
         .select(
-          "id, title, wbs_level2_number, wbs_level3_number, target_deliverable, queue_projects!queue_project_tasks_project_id_fkey(title, level1_number)"
+          "id, project_id, title, wbs_level2_number, wbs_level3_number, target_deliverable, status, queue_projects!queue_project_tasks_project_id_fkey(title, level1_number)"
         )
         .in("id", ids)
         .then(unwrap);
@@ -188,7 +206,9 @@ export const listMilestonesByIds = (ids) =>
     ? Promise.resolve([])
     : supabase
         .from("deadline_milestones")
-        .select("id, title, wbs_level2_number, wbs_level3_number, target_deliverable, deadline_projects(title, level1_number)")
+        .select(
+          "id, project_id, title, wbs_level2_number, wbs_level3_number, target_deliverable, planned_date, status, deadline_projects(title, level1_number)"
+        )
         .in("id", ids)
         .then(unwrap);
 export const listRecurringInstancesByIds = (ids) =>
@@ -196,13 +216,15 @@ export const listRecurringInstancesByIds = (ids) =>
     ? Promise.resolve([])
     : supabase
         .from("recurring_task_instances")
-        .select("id, full_number, due_date, recurring_task_templates(title, module_id, owner, deliverable_template)")
+        .select(
+          "id, template_id, full_number, level2_number, level3_number, due_date, status, recurring_task_templates(title, level1_number, module_id, owner, deliverable_template)"
+        )
         .in("id", ids)
         .then(unwrap);
 export const listAdHocTasksByIds = (ids) =>
   ids.length === 0
     ? Promise.resolve([])
-    : supabase.from("ad_hoc_tasks").select("id, title").in("id", ids).then(unwrap);
+    : supabase.from("ad_hoc_tasks").select("id, title, level1_number, status").in("id", ids).then(unwrap);
 
 // ---- ad_hoc_tasks (类型D) ----
 export const listAdHocTasks = () =>

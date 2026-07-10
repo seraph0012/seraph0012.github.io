@@ -65,6 +65,13 @@ async function load() {
   }
 
   renderMilestones();
+  prefillNextWbsNumber();
+}
+
+// 新增节点表单预填"当前最大二级编号+1"，跟一级编号同样的默认预填+可手动改逻辑
+function prefillNextWbsNumber() {
+  const maxLevel2 = project.deadline_milestones.reduce((m, x) => Math.max(m, x.wbs_level2_number), 0);
+  document.querySelector('#milestone-form input[name="wbs_level2_number"]').value = maxLevel2 + 1;
 }
 
 async function refreshDelayAlert() {
@@ -154,4 +161,4 @@ document.getElementById("milestone-form").addEventListener("submit", async (e) =
   }
 });
 
-load();
+await load();

@@ -5,6 +5,13 @@ body {
   padding: 0 16px 40px;
   color: #222;
 }
+/* 表格列多的页面(计划/总结/候选池)整体页面不再限死960px居中，否则表格必然溢出显示错乱 */
+body.wide-page { max-width: 1600px; }
+
+.table-scroll { width: 100%; overflow-x: auto; }
+.table-scroll table { min-width: 1400px; }
+.task-col { max-width: 14em; white-space: normal; word-break: break-word; }
+td.readonly-col { color: #555; }
 
 h1 { font-size: 22px; margin: 24px 0 16px; }
 h2 { font-size: 16px; }

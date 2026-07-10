@@ -7,6 +7,7 @@ import {
   listMeetingWeeks,
   claimTaskNumber,
   setTaskNumberOwner,
+  suggestNextTaskNumber,
   createQueueProject,
   createDeadlineProject,
   createRecurringTemplate,
@@ -80,19 +81,27 @@ function renderPromoteForm(task) {
     const fd = new FormData(form);
     const type = fd.get("type");
     try {
-      const numberRow = await claimTaskNumber({
-        task_type: type,
-        title_snapshot: task.title,
-        owning_table:
-          type === "queue" ? "queue_projects" : type === "deadline" ? "deadline_projects" : "recurring_task_templates",
-        owning_id: 0,
-      });
+      // 计划外任务创建时已经分配过编号了（level1_number），转正时复用同一个号，
+      // 不再重新claim一个——一件工作事项从"计划外"变成"类型A/B/C"，编号应该延续，
+      // 不是变成两个不同的号。只有历史遗留(创建于加上"创建时分配编号"之前)没有号的
+      // 情况才临时补claim一个。
+      let level1Number = task.level1_number;
+      if (level1Number == null) {
+        const numberRow = await claimTaskNumber({
+          task_type: type,
+          title_snapshot: task.title,
+          owning_table:
+            type === "queue" ? "queue_projects" : type === "deadline" ? "deadline_projects" : "recurring_task_templates",
+          owning_id: 0,
+        });
+        level1Number = numberRow.level1_number;
+      }
 
       let newId;
       if (type === "queue") {
-        const p = await createQueueProject({ title: task.title, level1_number: numberRow.level1_number });
+        const p = await createQueueProject({ title: task.title, level1_number: level1Number });
         newId = p.id;
-        await setTaskNumberOwner(numberRow.level1_number, p.id);
+        await setTaskNumberOwner(level1Number, p.id);
         await updateAdHocTask(task.id, {
           promoted_to_type: "queue",
           promoted_to_queue_project_id: newId,
@@ -102,10 +111,10 @@ function renderPromoteForm(task) {
         const p = await createDeadlineProject({
           title: task.title,
           deadline_date: fd.get("deadline_date"),
-          level1_number: numberRow.level1_number,
+          level1_number: level1Number,
         });
         newId = p.id;
-        await setTaskNumberOwner(numberRow.level1_number, p.id);
+        await setTaskNumberOwner(level1Number, p.id);
         await updateAdHocTask(task.id, {
           promoted_to_type: "deadline",
           promoted_to_deadline_project_id: newId,
@@ -119,10 +128,10 @@ function renderPromoteForm(task) {
           frequency: fd.get("frequency"),
           start_date: startWeek.natural_week_start,
           start_meeting_week_id: startWeekId,
-          level1_number: numberRow.level1_number,
+          level1_number: level1Number,
         });
         newId = p.id;
-        await setTaskNumberOwner(numberRow.level1_number, newId);
+        await setTaskNumberOwner(level1Number, newId);
         await updateAdHocTask(task.id, {
           promoted_to_type: "recurring",
           promoted_to_recurring_template_id: newId,
@@ -146,6 +155,7 @@ async function loadTable() {
   for (const t of tasks) {
     const tr = document.createElement("tr");
     tr.innerHTML = `
+      <td>${t.level1_number ?? ""}</td>
       <td>${t.title}</td>
       <td>${t.actual_start}</td>
       <td><input type="date" class="f-end" value="${t.actual_end ?? ""}" /></td>
@@ -177,14 +187,30 @@ document.getElementById("create-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const resultEl = document.getElementById("create-result");
   const form = new FormData(e.target);
+  const title = form.get("title");
+  const level1Number = Number(form.get("level1_number"));
+  resultEl.textContent = "创建中...";
+  resultEl.className = "status";
   try {
-    await createAdHocTask({
-      title: form.get("title"),
+    // 计划外任务("不确定要做几次"的类型D)也要求跟A/B/C一样一创建就有唯一编号——
+    // PPT里所有任务都必须能对上编号，不能等转正才有号
+    const numberRow = await claimTaskNumber({
+      task_type: "ad_hoc",
+      title_snapshot: title,
+      owning_table: "ad_hoc_tasks",
+      owning_id: 0,
+      level1_number: level1Number,
+    });
+    const task = await createAdHocTask({
+      title,
       actual_start: form.get("actual_start"),
       description: form.get("description") || null,
+      level1_number: numberRow.level1_number,
     });
+    await setTaskNumberOwner(numberRow.level1_number, task.id);
     e.target.reset();
     resultEl.textContent = "";
+    await prefillNextNumber();
     await loadTable();
   } catch (err) {
     resultEl.textContent = `失败：${err.message}`;
@@ -192,5 +218,10 @@ document.getElementById("create-form").addEventListener("submit", async (e) => {
   }
 });
 
+async function prefillNextNumber() {
+  document.querySelector('#create-form input[name="level1_number"]').value = await suggestNextTaskNumber();
+}
+
 allMeetingWeeks = await listMeetingWeeks();
+await prefillNextNumber();
 await loadTable();

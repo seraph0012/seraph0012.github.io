@@ -10,6 +10,7 @@ import {
   updateRecurringInstance,
   claimTaskNumber,
   setTaskNumberOwner,
+  suggestNextTaskNumber,
 } from "./shared/db.js";
 
 const session = await requireAuth();
@@ -185,6 +186,7 @@ document.getElementById("create-form").addEventListener("submit", async (e) => {
   const resultEl = document.getElementById("create-result");
   const form = new FormData(e.target);
   const title = form.get("title");
+  const level1Number = Number(form.get("level1_number"));
   resultEl.textContent = "创建中...";
   resultEl.className = "status";
   try {
@@ -193,6 +195,7 @@ document.getElementById("create-form").addEventListener("submit", async (e) => {
       title_snapshot: title,
       owning_table: "recurring_task_templates",
       owning_id: 0,
+      level1_number: level1Number,
     });
     const startWeekId = Number(form.get("start_meeting_week_id"));
     const startWeek = allMeetingWeeks.find((w) => w.id === startWeekId);
@@ -208,6 +211,7 @@ document.getElementById("create-form").addEventListener("submit", async (e) => {
     await setTaskNumberOwner(numberRow.level1_number, template.id);
     e.target.reset();
     resultEl.textContent = "";
+    await prefillNextNumber();
     await loadTemplates();
   } catch (err) {
     resultEl.textContent = `失败：${err.message}`;
@@ -215,7 +219,12 @@ document.getElementById("create-form").addEventListener("submit", async (e) => {
   }
 });
 
+async function prefillNextNumber() {
+  document.querySelector('#create-form input[name="level1_number"]').value = await suggestNextTaskNumber();
+}
+
 await populateLookups();
+await prefillNextNumber();
 await loadTemplates();
 if (selectedTemplateId) {
   await loadInstances();

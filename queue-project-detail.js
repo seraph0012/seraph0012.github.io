@@ -34,6 +34,13 @@ async function load() {
   form.category.value = project.category ?? "";
   form.status.value = project.status;
   renderTasks();
+  prefillNextWbsNumber();
+}
+
+// 新增子任务表单预填"当前最大二级编号+1"，跟一级编号同样的默认预填+可手动改逻辑
+function prefillNextWbsNumber() {
+  const maxLevel2 = project.queue_project_tasks.reduce((m, t) => Math.max(m, t.wbs_level2_number), 0);
+  document.querySelector('#task-form input[name="wbs_level2_number"]').value = maxLevel2 + 1;
 }
 
 function renderTasks() {
@@ -134,4 +141,4 @@ document.getElementById("task-form").addEventListener("submit", async (e) => {
   }
 });
 
-load();
+await load();

@@ -4,6 +4,7 @@ const LINKS = [
   { href: "index.html", label: "首页" },
   { href: "weekly-plan.html", label: "下周计划" },
   { href: "weekly-summary.html", label: "本周总结" },
+  { href: "ppt-export.html", label: "生成本周PPT" },
   { href: "queue-projects.html", label: "顺序队列" },
   { href: "deadline-projects.html", label: "截止日期任务" },
   { href: "recurring-tasks.html", label: "循环任务" },

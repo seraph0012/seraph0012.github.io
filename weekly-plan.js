@@ -13,8 +13,21 @@ import {
   deleteWeeklyTaskEntry,
   updateMeetingWeekFields,
 } from "./shared/db.js";
-import { SOURCE_LABEL, sourceIdOf, sourceColumnFor, buildLabelMap } from "./shared/taskLabels.js";
+import { SOURCE_LABEL, sourceIdOf, sourceColumnFor, buildLabelMap, buildSourceDetailMap } from "./shared/taskLabels.js";
 import { dateWithWeekday } from "./shared/dateUtils.js";
+import { validateSourceDetail, validateOwnFields } from "./shared/entryValidation.js";
+
+const PLAN_REQUIRED_FIELDS = [
+  ["module_id", "模块"],
+  ["plan_category", "类别"],
+  ["owner", "责任人"],
+  ["deliverable_this_week", "本周交付物"],
+  ["planned_hours", "计划用时"],
+  ["plan_start_date", "计划开始时间"],
+  ["execution_deadline", "执行期"],
+  ["priority_quadrant", "工作优先级"],
+  ["resources_needed", "需协调的资源"],
+];
 
 const session = await requireAuth();
 if (!session) {
@@ -71,7 +84,7 @@ async function generateCandidatePool(week) {
   for (const p of queueProjects) {
     if (p.status !== "active" || !p.current_task_id) continue;
     const task = p.queue_project_tasks.find((t) => t.id === p.current_task_id);
-    if (!task || task.status === "done") continue;
+    if (!task || task.status === "done" || task.status === "skipped") continue;
     raw.push({
       source_type: "queue_task",
       source_id: task.id,
@@ -123,10 +136,13 @@ async function generateCandidatePool(week) {
   }
 
   const filtered = raw.filter((c) => !alreadyPlanned.has(`${c.source_type}:${c.source_id}`));
-  const labelMap = await buildLabelMap(filtered);
+  const detailMap = await buildSourceDetailMap(filtered);
+  // 只有一个模块时不用每次手动选，直接默认选中它
+  const soleModuleId = allModules.length === 1 ? allModules[0].id : null;
   for (const c of filtered) {
-    c.label = labelMap.get(`${c.source_type}:${c.source_id}`) || "(未知任务)";
+    c.detail = detailMap.get(`${c.source_type}:${c.source_id}`) || {};
     c.plan_category = carryOver.has(`${c.source_type}:${c.source_id}`) ? "上周未完成" : "本周新增";
+    if (c.module_id == null && soleModuleId != null) c.module_id = soleModuleId;
   }
   return filtered;
 }
@@ -164,7 +180,28 @@ function renderLockUI() {
   statusEl.className = locked ? "status warn" : "status";
 }
 
+// 锁定前完整性校验——本周计划表里所有条目的必填字段、以及各自源任务(项目/里程碑/循环任务
+// 详情页填的标题/最终目标交付物/最终计划完成时间)必须都补全，否则报错列出缺哪些，不给锁定
+async function validatePlanBeforeLock() {
+  const entries = await listWeeklyTaskEntries(targetWeek.id, "plan");
+  const labelItems = entries.map((e) => ({ source_type: e.source_type, source_id: sourceIdOf(e) }));
+  const [labelMap, detailMap] = await Promise.all([buildLabelMap(labelItems), buildSourceDetailMap(labelItems)]);
+  const problems = [];
+  for (const e of entries) {
+    const label = labelMap.get(`${e.source_type}:${sourceIdOf(e)}`) || "(未知任务)";
+    const detail = detailMap.get(`${e.source_type}:${sourceIdOf(e)}`);
+    const errs = [...validateOwnFields(e, PLAN_REQUIRED_FIELDS), ...validateSourceDetail(e, detail)];
+    if (errs.length > 0) problems.push(`${label}：${errs.join("；")}`);
+  }
+  return problems;
+}
+
 document.getElementById("lock-btn").addEventListener("click", async () => {
+  const problems = await validatePlanBeforeLock();
+  if (problems.length > 0) {
+    alert(`本周计划还有内容没填完，暂不能锁定：\n\n${problems.join("\n")}`);
+    return;
+  }
   const updated = await updateMeetingWeekFields(targetWeek.id, { plan_locked_at: new Date().toISOString() });
   Object.assign(targetWeek, updated);
   renderLockUI();
@@ -218,7 +255,9 @@ function renderCandidates() {
     tr.innerHTML = `
       <td><input type="checkbox" class="f-check" checked /></td>
       <td>${SOURCE_LABEL[c.source_type]}</td>
-      <td>${c.label}</td>
+      <td class="task-col">${c.detail.level1Text || ""}</td>
+      <td class="task-col">${c.detail.level2Text || ""}</td>
+      <td class="task-col">${c.detail.level3Text || ""}</td>
       <td>${c.plan_category}</td>
       <td><select class="f-module">${moduleOptionsHtml(c.module_id)}</select></td>
       <td><input type="text" class="f-deliverable" value="${c.deliverable_this_week || ""}" style="width:14em" /></td>
@@ -309,17 +348,21 @@ async function loadSavedPlan() {
   if (!targetWeek) return;
   const entries = await listWeeklyTaskEntries(targetWeek.id, "plan");
   const labelItems = entries.map((e) => ({ source_type: e.source_type, source_id: sourceIdOf(e) }));
-  const labelMap = await buildLabelMap(labelItems);
+  const detailMap = await buildSourceDetailMap(labelItems);
 
   const tbody = document.getElementById("plan-tbody");
   tbody.innerHTML = "";
   const locked = isPlanLocked();
   const dis = locked ? "disabled" : "";
   for (const e of entries) {
-    const label = labelMap.get(`${e.source_type}:${sourceIdOf(e)}`) || "(未知任务)";
+    const detail = detailMap.get(`${e.source_type}:${sourceIdOf(e)}`) || {};
     const tr = document.createElement("tr");
     tr.innerHTML = `
-      <td>${label}</td>
+      <td class="task-col readonly-col">${detail.level1Text || ""}</td>
+      <td class="task-col readonly-col">${detail.level2Text || ""}</td>
+      <td class="task-col readonly-col">${detail.level3Text || ""}</td>
+      <td class="task-col readonly-col">${detail.targetDeliverable || ""}</td>
+      <td class="readonly-col">${detail.completionDate || ""}</td>
       <td>
         <select class="f-category" ${dis}>
           <option value="上周未完成" ${e.plan_category === "上周未完成" ? "selected" : ""}>上周未完成</option>
@@ -335,6 +378,7 @@ async function loadSavedPlan() {
       <td><select class="f-priority" ${dis}>${priorityOptionsHtml(e.priority_quadrant)}</select></td>
       <td><input type="text" class="f-resources" value="${e.resources_needed || ""}" style="width:8em" ${dis} /></td>
       <td><input type="checkbox" class="f-highlight" ${e.highlight ? "checked" : ""} ${dis} /></td>
+      <td>${detail.detailUrl ? `<a href="${detail.detailUrl}" target="_blank" rel="noopener">编辑任务信息</a>` : ""}</td>
       <td><button type="button" class="secondary f-delete" ${dis}>删除</button></td>
     `;
     const save = async () => {
