@@ -2,6 +2,7 @@ import { requireAuth } from "./shared/authGuard.js";
 import { renderNav } from "./shared/nav.js";
 import {
   listModules,
+  listPeople,
   listMeetingWeeks,
   listQueueProjects,
   listDeadlineProjects,
@@ -43,6 +44,7 @@ const PRIORITY_OPTIONS = [
 ];
 
 let allModules = [];
+let allPeople = [];
 let allWeeks = [];
 let targetWeek = null;
 let previousWeek = null;
@@ -99,8 +101,8 @@ async function generateCandidatePool(week) {
     raw.push({
       source_type: "queue_task",
       source_id: task.id,
-      module_id: null,
-      owner: null,
+      module_id: task.module_id,
+      owner: task.owner,
       deliverable_this_week: task.target_deliverable || "",
       execution_deadline: null,
     });
@@ -115,8 +117,8 @@ async function generateCandidatePool(week) {
       raw.push({
         source_type: "milestone",
         source_id: m.id,
-        module_id: null,
-        owner: null,
+        module_id: m.module_id,
+        owner: m.owner,
         deliverable_this_week: m.target_deliverable || "",
         execution_deadline: m.planned_date,
       });
@@ -314,7 +316,9 @@ document.getElementById("add-selected-btn").addEventListener("click", async () =
       [sourceColumnFor(c.source_type)]: c.source_id,
       module_id: tr.querySelector(".f-module").value || null,
       plan_category: c.plan_category,
-      owner: c.owner || "刘璇",
+      // 任务自带的owner现在是必填的了(tasks.html创建时就要求)，这里留一个兜底：
+      // 只有一个责任人时用它兜底，不写死具体名字
+      owner: c.owner || (allPeople.length === 1 ? allPeople[0].name : null),
       deliverable_this_week: tr.querySelector(".f-deliverable").value || null,
       planned_hours: tr.querySelector(".f-hours").value || null,
       priority_quadrant: tr.querySelector(".f-priority").value || null,
@@ -398,8 +402,9 @@ async function loadSavedPlan() {
 }
 
 async function init() {
-  const [modules, weeks] = await Promise.all([listModules(), listMeetingWeeks()]);
+  const [modules, people, weeks] = await Promise.all([listModules(), listPeople(), listMeetingWeeks()]);
   allModules = modules;
+  allPeople = people;
   // 没开例会的整周（春节假期等，在meeting-weeks.html取消勾选"正常"）不参与本周计划的周选择
   allWeeks = weeks.filter((w) => w.is_normal !== false);
 

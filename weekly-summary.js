@@ -309,8 +309,8 @@ async function populateUnplannedOptions() {
       candidates.push({
         source_type: "queue_task",
         source_id: t.id,
-        module_id: null,
-        owner: null,
+        module_id: t.module_id,
+        owner: t.owner,
         deliverable_this_week: t.target_deliverable || "",
       });
     }
@@ -322,8 +322,8 @@ async function populateUnplannedOptions() {
       candidates.push({
         source_type: "milestone",
         source_id: m.id,
-        module_id: null,
-        owner: null,
+        module_id: m.module_id,
+        owner: m.owner,
         deliverable_this_week: m.target_deliverable || "",
       });
     }

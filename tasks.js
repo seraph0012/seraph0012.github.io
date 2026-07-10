@@ -2,6 +2,7 @@ import { requireAuth } from "./shared/authGuard.js";
 import { renderNav } from "./shared/nav.js";
 import {
   listModules,
+  listPeople,
   listMeetingWeeks,
   listQueueProjects,
   createQueueProject,
@@ -41,6 +42,7 @@ renderNav();
 const highlightKey = new URLSearchParams(window.location.search).get("highlight"); // 例如 "queue_task:123"
 
 let allModules = [];
+let allPeople = [];
 let allWeeksRaw = []; // 未过滤，起始/新增例会周下拉用
 let allWeeks = []; // 过滤掉is_normal=false，循环任务编号算法用
 let queueProjects = [];
@@ -61,6 +63,26 @@ function moduleOptionsHtml(selectedId) {
     `<option value="">(未分类)</option>` +
     allModules.map((m) => `<option value="${m.id}" ${m.id === selectedId ? "selected" : ""}>${m.name}</option>`).join("")
   );
+}
+
+// 模块/责任人现在是每个任务创建时都要填的必填项(2026-07-10跟用户确认)——新建表单用这个
+// "严格版"(没有留空选项)，默认预填"唯一模块/唯一责任人"，避免每次都要手动选。
+// 编辑已有任务时仍用上面允许留空的moduleOptionsHtml，不强行修正历史数据。
+function moduleOptionsHtmlStrict(selectedId) {
+  if (allModules.length === 0) return `<option value="">(请先去模块管理页面添加)</option>`;
+  return allModules.map((m) => `<option value="${m.id}" ${m.id === selectedId ? "selected" : ""}>${m.name}</option>`).join("");
+}
+function soleModuleId() {
+  return allModules.length === 1 ? allModules[0].id : null;
+}
+
+function peopleOptionsHtml(selectedName, { allowEmpty = false } = {}) {
+  const emptyOpt = allowEmpty ? `<option value="">(未设置)</option>` : "";
+  if (allPeople.length === 0) return emptyOpt || `<option value="">(请先去责任人管理页面添加)</option>`;
+  return emptyOpt + allPeople.map((p) => `<option value="${p.name}" ${p.name === selectedName ? "selected" : ""}>${p.name}</option>`).join("");
+}
+function solePersonName() {
+  return allPeople.length === 1 ? allPeople[0].name : null;
 }
 
 function weekOptionsHtml(selectedId) {
@@ -242,6 +264,12 @@ async function onOwnerChange() {
   }
   if (isQueueOrDeadline) {
     refreshLevel2Options(sel);
+    document.getElementById("leaf-module").innerHTML = moduleOptionsHtmlStrict(soleModuleId());
+    document.getElementById("leaf-owner").innerHTML = peopleOptionsHtml(solePersonName());
+  }
+  if (sel.type === "recurring" && sel.isNew) {
+    document.getElementById("recurring-module").innerHTML = moduleOptionsHtmlStrict(soleModuleId());
+    document.getElementById("recurring-owner-select").innerHTML = peopleOptionsHtml(solePersonName());
   }
   if (sel.type === "recurring" && !sel.isNew) {
     refreshRecurringPreview(sel.id);
@@ -254,6 +282,8 @@ async function createQueueOrDeadlineLeaf(sel) {
   const title = document.getElementById("leaf-title").value.trim();
   const deliverable = document.getElementById("leaf-deliverable").value.trim();
   const completionDate = document.getElementById("leaf-completion-date").value;
+  const moduleId = document.getElementById("leaf-module").value || null;
+  const owner = document.getElementById("leaf-owner").value.trim();
   const level2Select = document.getElementById("wbs-level2-select");
   let level2 = null;
   let level3 = null;
@@ -262,8 +292,8 @@ async function createQueueOrDeadlineLeaf(sel) {
     const level3raw = document.getElementById("wbs-level3").value;
     level3 = level3raw ? Number(level3raw) : null;
   }
-  if (!title || !deliverable || !completionDate) {
-    throw new Error("任务标题/最终目标交付物/最终计划完成时间都是必填项");
+  if (!title || !deliverable || !completionDate || !moduleId || !owner) {
+    throw new Error("任务标题/模块/责任人/最终目标交付物/最终计划完成时间都是必填项");
   }
 
   let projectId;
@@ -302,6 +332,8 @@ async function createQueueOrDeadlineLeaf(sel) {
       wbs_level2_number: level2,
       wbs_level3_number: level3,
       title,
+      module_id: moduleId,
+      owner,
       target_deliverable: deliverable,
       planned_completion_date: completionDate,
     });
@@ -310,6 +342,8 @@ async function createQueueOrDeadlineLeaf(sel) {
       wbs_level2_number: level2,
       wbs_level3_number: level3,
       title,
+      module_id: moduleId,
+      owner,
       target_deliverable: deliverable,
       planned_date: completionDate,
     });
@@ -321,8 +355,10 @@ async function createRecurringNew() {
   const deliverable = document.getElementById("recurring-deliverable").value.trim();
   const firstWeekId = Number(document.getElementById("recurring-first-week").value);
   const level1Number = Number(document.getElementById("new-project-number").value);
-  if (!title || !deliverable || !firstWeekId) {
-    throw new Error("标题/最终目标交付物/第一次的例会周都是必填项");
+  const moduleId = document.getElementById("recurring-module").value || null;
+  const owner = document.getElementById("recurring-owner-select").value.trim();
+  if (!title || !deliverable || !firstWeekId || !moduleId || !owner) {
+    throw new Error("标题/模块/责任人/最终目标交付物/第一次的例会周都是必填项");
   }
   const numberRow = await claimTaskNumber({
     task_type: "recurring",
@@ -334,8 +370,8 @@ async function createRecurringNew() {
   const frequency = document.getElementById("recurring-frequency").value;
   const template = await createRecurringTemplate({
     title,
-    module_id: document.getElementById("recurring-module").value || null,
-    owner: document.getElementById("recurring-owner").value.trim() || null,
+    module_id: moduleId,
+    owner,
     frequency,
     deliverable_template: deliverable,
     level1_number: numberRow.level1_number,
@@ -418,10 +454,16 @@ function groupChildren(children) {
   return { direct, level2Groups };
 }
 
+function moduleNameFor(moduleId) {
+  return allModules.find((m) => m.id === moduleId)?.name ?? "";
+}
+
 function makeLeafRow(type, typeLabel, project, item, number) {
   const isQueue = type === "queue";
   const isDeadline = type === "deadline";
   const isRecurring = type === "recurring";
+  const moduleId = isRecurring ? project.module_id : item.module_id;
+  const owner = isRecurring ? project.owner : item.owner;
   return {
     kind: "leaf",
     key: isQueue ? `queue_task:${item.id}` : isDeadline ? `milestone:${item.id}` : `recurring_instance:${item.id}`,
@@ -430,6 +472,8 @@ function makeLeafRow(type, typeLabel, project, item, number) {
     number,
     projectName: project.title,
     title: isRecurring ? project.title : item.title,
+    moduleName: moduleNameFor(moduleId),
+    owner: owner ?? "",
     deliverable: isRecurring ? project.deliverable_template : item.target_deliverable,
     completionDate: isQueue ? item.planned_completion_date : isDeadline ? item.planned_date : item.due_date,
     actualDate: item.actual_completion_date ?? item.actual_date,
@@ -516,12 +560,25 @@ function buildDetailPanel(r, locked) {
     wrap.innerHTML = `
       <div class="inline-form">
         <label>标题 <input type="text" class="d-title" value="${t.title}" style="min-width:200px" /></label>
-        <label>最终目标交付物 <input type="text" class="d-deliverable" value="${t.target_deliverable ?? ""}" style="min-width:200px" /></label>
-        <span>最终计划完成时间：${
+        <label>模块 <select class="d-module">${moduleOptionsHtml(t.module_id)}</select></label>
+        <label>责任人 <select class="d-owner">${peopleOptionsHtml(t.owner, { allowEmpty: true })}</select></label>
+      </div>
+      <div class="inline-form" style="margin-top:6px;">
+        ${
           locked
-            ? `🔒 ${completionValue ?? ""}${noteValue ? ` <span class="badge">订正：${noteValue}</span>` : ""} <button type="button" class="secondary d-amend">订正</button>`
-            : `<input type="date" class="d-completion" value="${completionValue ?? ""}" />`
-        }</span>
+            ? `<span class="d-locked-display">🔒 最终目标交付物：${t.target_deliverable ?? ""} ｜ 最终计划完成时间：${completionValue ?? ""}${
+                noteValue ? ` <span class="badge">订正：${noteValue}</span>` : ""
+              } <button type="button" class="secondary d-amend-toggle">订正</button></span>
+               <span class="d-amend-form" hidden>
+                 <label>新的最终目标交付物 <input type="text" class="d-amend-deliverable" value="${t.target_deliverable ?? ""}" style="min-width:200px" /></label>
+                 <label>新的最终计划完成时间 <input type="date" class="d-amend-date" value="${completionValue ?? ""}" /></label>
+                 <label>订正说明(必填) <input type="text" class="d-amend-note" placeholder="为什么要修改" style="min-width:200px" /></label>
+                 <button type="button" class="d-amend-confirm">确认订正</button>
+                 <button type="button" class="secondary d-amend-cancel">取消</button>
+               </span>`
+            : `<label>最终目标交付物 <input type="text" class="d-deliverable" value="${t.target_deliverable ?? ""}" style="min-width:200px" /></label>
+               <label>最终计划完成时间 <input type="date" class="d-completion" value="${completionValue ?? ""}" /></label>`
+        }
         ${
           !isQueue
             ? `<label>实际日期 <input type="date" class="d-actual" value="${t.actual_date ?? ""}" /></label>`
@@ -550,10 +607,21 @@ function buildDetailPanel(r, locked) {
       await updateItemFn(t.id, { title: e.target.value });
       await reloadAll();
     });
-    wrap.querySelector(".d-deliverable").addEventListener("change", async (e) => {
-      await updateItemFn(t.id, { target_deliverable: e.target.value || null });
+    wrap.querySelector(".d-module").addEventListener("change", async (e) => {
+      await updateItemFn(t.id, { module_id: e.target.value || null });
       await reloadAll();
     });
+    wrap.querySelector(".d-owner").addEventListener("change", async (e) => {
+      await updateItemFn(t.id, { owner: e.target.value || null });
+      await reloadAll();
+    });
+    const deliverableInputLoose = wrap.querySelector(".d-deliverable");
+    if (deliverableInputLoose) {
+      deliverableInputLoose.addEventListener("change", async (e) => {
+        await updateItemFn(t.id, { target_deliverable: e.target.value || null });
+        await reloadAll();
+      });
+    }
     const completionInput = wrap.querySelector(".d-completion");
     if (completionInput) {
       completionInput.addEventListener("change", async (e) => {
@@ -561,18 +629,42 @@ function buildDetailPanel(r, locked) {
         await reloadAll();
       });
     }
-    const amendBtn = wrap.querySelector(".d-amend");
-    if (amendBtn) {
-      amendBtn.addEventListener("click", async () => {
-        const note = prompt("请填写订正说明（为什么要修改已锁定的最终计划完成时间，这条会被记录）：");
-        if (!note) return;
-        const newDate = prompt("新的最终计划完成时间(YYYY-MM-DD)：", completionValue ?? "");
-        if (!newDate) return;
+    // 锁定后，最终目标交付物/最终计划完成时间要一起订正(不再是alert()两次弹窗那种很不方便的
+    // 交互，改成页面内的一个小表单)——一旦任务进了某一周的计划，这两项就跟"实际完成时间做
+    // 效率对比"这个目的绑在一起，改动都要求写清楚订正说明
+    const amendToggle = wrap.querySelector(".d-amend-toggle");
+    if (amendToggle) {
+      const amendForm = wrap.querySelector(".d-amend-form");
+      const lockedDisplay = wrap.querySelector(".d-locked-display");
+      amendToggle.addEventListener("click", () => {
+        lockedDisplay.hidden = true;
+        amendForm.hidden = false;
+      });
+      wrap.querySelector(".d-amend-cancel").addEventListener("click", () => {
+        amendForm.hidden = true;
+        lockedDisplay.hidden = false;
+      });
+      wrap.querySelector(".d-amend-confirm").addEventListener("click", async () => {
+        const note = wrap.querySelector(".d-amend-note").value.trim();
+        if (!note) {
+          alert("请填写订正说明");
+          return;
+        }
+        const newDeliverable = wrap.querySelector(".d-amend-deliverable").value.trim();
+        const newDate = wrap.querySelector(".d-amend-date").value;
         await updateItemFn(
           t.id,
           isQueue
-            ? { planned_completion_date: newDate, completion_date_amendment_note: note }
-            : { planned_date: newDate, planned_date_amendment_note: note }
+            ? {
+                target_deliverable: newDeliverable || null,
+                planned_completion_date: newDate,
+                completion_date_amendment_note: note,
+              }
+            : {
+                target_deliverable: newDeliverable || null,
+                planned_date: newDate,
+                planned_date_amendment_note: note,
+              }
         );
         await reloadAll();
       });
@@ -738,13 +830,13 @@ async function renderTaskTable() {
   for (const r of rows) {
     if (r.kind === "project-header") {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td colspan="9" style="background:#f2f2f2;font-weight:600;">${r.label}（${r.typeLabel}）</td>`;
+      tr.innerHTML = `<td colspan="11" style="background:#f2f2f2;font-weight:600;">${r.label}（${r.typeLabel}）</td>`;
       tbody.appendChild(tr);
       continue;
     }
     if (r.kind === "level2-header") {
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td colspan="9" style="padding-left:2em;color:#666;">${r.label}</td>`;
+      tr.innerHTML = `<td colspan="11" style="padding-left:2em;color:#666;">${r.label}</td>`;
       tbody.appendChild(tr);
       continue;
     }
@@ -757,7 +849,9 @@ async function renderTaskTable() {
       <td>${r.typeLabel}</td>
       <td class="task-col">${r.projectName}</td>
       <td class="task-col">${r.title}</td>
-      <td class="task-col">${r.deliverable ?? ""}</td>
+      <td>${r.moduleName}</td>
+      <td>${r.owner}</td>
+      <td class="task-col">${locked ? `🔒 ${r.deliverable ?? ""}` : r.deliverable ?? ""}</td>
       <td>${locked ? `🔒 ${r.completionDate ?? ""}` : r.completionDate ?? ""}</td>
       <td>${r.actualDate ?? ""}</td>
       <td>${r.status}</td>
@@ -773,7 +867,7 @@ async function renderTaskTable() {
     if (openDetailKeys.has(r.key)) {
       const detailTr = document.createElement("tr");
       const td = document.createElement("td");
-      td.colSpan = 9;
+      td.colSpan = 11;
       td.appendChild(buildDetailPanel(r, locked));
       detailTr.appendChild(td);
       tbody.appendChild(detailTr);
@@ -802,8 +896,9 @@ async function reloadAll() {
 }
 
 async function init() {
-  const [modules, weeks] = await Promise.all([listModules(), listMeetingWeeks()]);
+  const [modules, people, weeks] = await Promise.all([listModules(), listPeople(), listMeetingWeeks()]);
   allModules = modules;
+  allPeople = people;
   allWeeksRaw = weeks;
   allWeeks = weeks.filter((w) => w.is_normal !== false);
 

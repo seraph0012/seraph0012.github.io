@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>周报自动化系统 — 责任人管理</title>
+  <link rel="stylesheet" href="./shared/style.css" />
+</head>
+<body>
+  <nav id="app-nav"></nav>
+
+  <h1>责任人管理（people）</h1>
+  <p>维护一份责任人名单，供任务创建表单默认预填（只有一个人时自动选中，不用每次手动选），避免代码里写死名字。</p>
+
+  <section>
+    <h2>新增</h2>
+    <form id="create-form" class="inline-form">
+      <input type="text" name="name" placeholder="姓名，如 刘璇" required />
+      <button type="submit">新增</button>
+    </form>
+    <p id="create-result" class="status"></p>
+  </section>
+
+  <section>
+    <h2>全部责任人</h2>
+    <table>
+      <thead><tr><th>姓名</th><th></th></tr></thead>
+      <tbody id="people-tbody"></tbody>
+    </table>
+  </section>
+
+  <script type="module" src="./people.js"></script>
+</body>
+</html>

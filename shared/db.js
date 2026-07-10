@@ -13,6 +13,14 @@ export const createModule = (name) =>
 export const deleteModule = (id) =>
   supabase.from("modules").delete().eq("id", id).then(unwrap);
 
+// ---- people (责任人配置列表，跟modules同构，供任务创建表单默认预填用) ----
+export const listPeople = () =>
+  supabase.from("people").select("*").order("name").then(unwrap);
+export const createPerson = (name) =>
+  supabase.from("people").insert({ name }).select().single().then(unwrap);
+export const deletePerson = (id) =>
+  supabase.from("people").delete().eq("id", id).then(unwrap);
+
 // ---- meeting_weeks ----
 export const listMeetingWeeks = () =>
   supabase.from("meeting_weeks").select("*").order("natural_week_start").then(unwrap);

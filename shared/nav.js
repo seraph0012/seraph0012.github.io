@@ -8,6 +8,7 @@ const LINKS = [
   { href: "tasks.html", label: "任务管理" },
   { href: "meeting-weeks.html", label: "例会日历" },
   { href: "modules.html", label: "模块管理" },
+  { href: "people.html", label: "责任人管理" },
 ];
 
 export function renderNav() {
