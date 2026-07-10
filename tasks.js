@@ -201,18 +201,22 @@ function refreshLevel2Options(sel) {
   onLevel2Change(sel);
 }
 
+// 三级编号默认留空(=这个二级本身就是任务，不再往下分解)——只有明确已经存在三级子任务的
+// 二级分组，才自动预填"下一个三级编号"；新建二级分组时不假设一定会有三级，用户测试的任务
+// 大多只到二级为止，强行默认填1会导致无法创建纯1+2级任务(2026-07-10用户反馈修正)。
 function onLevel2Change(sel) {
   const level2Select = document.getElementById("wbs-level2-select");
   const val = level2Select.value;
   const isNewLevel2 = val === "__new__";
   const isNone = val === "__none__";
+  const level3Input = document.getElementById("wbs-level3");
   document.getElementById("wbs-level2-new-wrap").hidden = !isNewLevel2;
-  document.getElementById("wbs-level3").closest("label").hidden = isNone;
+  level3Input.closest("label").hidden = isNone;
   if (isNone) return;
   if (sel.isNew) {
     if (isNewLevel2) {
       document.getElementById("wbs-level2-new").value = 1;
-      document.getElementById("wbs-level3").value = 1;
+      level3Input.value = "";
     }
     return;
   }
@@ -223,12 +227,17 @@ function onLevel2Change(sel) {
     const existingLevel2 = children.filter((c) => c.wbs_level2_number != null).map((c) => c.wbs_level2_number);
     const maxLevel2 = existingLevel2.length ? Math.max(...existingLevel2) : 0;
     document.getElementById("wbs-level2-new").value = maxLevel2 + 1;
-    document.getElementById("wbs-level3").value = 1;
+    level3Input.value = "";
   } else {
     const level2Value = Number(val);
     const siblings = children.filter((c) => c.wbs_level2_number === level2Value);
-    const maxLevel3 = siblings.reduce((m, c) => Math.max(m, c.wbs_level3_number ?? 0), 0);
-    document.getElementById("wbs-level3").value = maxLevel3 + 1;
+    const hasLevel3 = siblings.some((c) => c.wbs_level3_number != null);
+    if (hasLevel3) {
+      const maxLevel3 = siblings.reduce((m, c) => Math.max(m, c.wbs_level3_number ?? 0), 0);
+      level3Input.value = maxLevel3 + 1;
+    } else {
+      level3Input.value = "";
+    }
   }
 }
 
