@@ -3,7 +3,7 @@ import { requireAuth } from "./shared/authGuard.js";
 import { renderNav } from "./shared/nav.js";
 import { listModules, listMeetingWeeks, listWeeklyTaskEntries } from "./shared/db.js";
 import { sourceIdOf, buildSourceDetailMap } from "./shared/taskLabels.js";
-import { weekdayLabel } from "./shared/dateUtils.js";
+import { weekdayLabel, monthDayLabel } from "./shared/dateUtils.js";
 import {
   parseXml,
   serializeXml,
@@ -23,13 +23,28 @@ renderNav();
 
 const TEMPLATE_URL = "./assets/weekly_report_template.pptx";
 
+// 文案跟模板slide6(PLAN表)脚注原文对齐："说明：工作优先级分为重要紧急、重要不紧急、
+// 不重要紧急、不重要不紧急。"——之前的文案用词顺序跟模板脚注不一致
 const PRIORITY_LABEL = {
-  urgent_important: "紧急且重要",
+  urgent_important: "重要紧急",
   important_not_urgent: "重要不紧急",
-  urgent_not_important: "紧急不重要",
-  neither: "不紧急不重要",
+  urgent_not_important: "不重要紧急",
+  neither: "不重要不紧急",
 };
 const RISK_LABEL = { green: "低", yellow: "中", red: "高" };
+
+// 风险说明/工作优先级两列要求的是"文字背景色"(PowerPoint文本突出显示，<a:highlight>)而不是
+// 整个单元格背景色(2026-07-10用户明确要求)。颜色值实测取自模板本身：slide4(SUMMARY表)
+// 风险脚注"绿色/黄色/红色依次递增"三个字的<a:highlight>分别是00FF00/FFFF00/FF0000；
+// slide6(PLAN表)优先级脚注"重要紧急/重要不紧急/不重要紧急/不重要不紧急"四个词分别是
+// FF0000/FFFF00/00FFFF/00FF00——直接照抄模板自己的配色，不是新拍的颜色。
+const RISK_HIGHLIGHT = { green: "00FF00", yellow: "FFFF00", red: "FF0000" };
+const PRIORITY_HIGHLIGHT = {
+  urgent_important: "FF0000",
+  important_not_urgent: "FFFF00",
+  urgent_not_important: "00FFFF",
+  neither: "00FF00",
+};
 
 // PLAN/SUMMARY/STOPPED三张表的前4列都是模块/类别/任务1级/任务2级，竖向合并规则一致：
 // 任务2级(列3)即使文字重复，只要任务1级(列2)换了也要断开合并，不能跨1级边界合并
@@ -112,19 +127,24 @@ function buildPlanLikeRows(entries, detailMap) {
       detail.level3Text || "",
       e.owner || "",
       e.deliverable_this_week || "",
-      e.planned_hours != null ? String(e.planned_hours) : "",
+      e.planned_hours != null ? `${e.planned_hours}h` : "",
       weekdayLabel(e.plan_start_date),
       weekdayLabel(e.execution_deadline),
       detail.targetDeliverable || "",
-      detail.completionDate || "",
+      monthDayLabel(detail.completionDate),
       PRIORITY_LABEL[e.priority_quadrant] || "",
       e.resources_needed || "无",
     ];
   });
   const blanked = blankRepeatingColumns(rows, [0, 1, 2, 3], { 3: 2 });
+  const PRIORITY_COL = 12; // 工作优先级——按4象限文字高亮，颜色取自模板脚注(见PRIORITY_HIGHLIGHT)
   return blanked.map((row, i) => {
     const fills = rowFills(!!sorted[i].highlight, row.length);
-    return row.map((text, c) => ({ text, fill: fills[c] }));
+    return row.map((text, c) => ({
+      text,
+      fill: fills[c],
+      textHighlight: c === PRIORITY_COL ? PRIORITY_HIGHLIGHT[sorted[i].priority_quadrant] : undefined,
+    }));
   });
 }
 
@@ -145,21 +165,24 @@ function buildSummaryRows(entries, detailMap) {
       e.owner || "",
       e.deliverable_this_week || "",
       e.status || "",
-      e.actual_hours != null ? String(e.actual_hours) : "",
+      e.actual_hours != null ? `${e.actual_hours}h` : "",
       e.incomplete_reason || "",
       e.rectification_measures || "",
       RISK_LABEL[e.risk_level] || "",
       detail.targetDeliverable || "",
       detail.sourceStatus || "",
-      detail.completionDate || "",
+      monthDayLabel(detail.completionDate),
     ];
   });
   const blanked = blankRepeatingColumns(rows, [0, 1, 2, 3], { 3: 2 });
-  const RISK_COL = 11; // 风险说明——按risk_level(green/yellow/red)填色，跟highlight强调色互不干扰
+  const RISK_COL = 11; // 风险说明——按risk_level(green/yellow/red)文字高亮，颜色取自模板脚注(见RISK_HIGHLIGHT)
   return blanked.map((row, i) => {
     const fills = rowFills(!!sorted[i].highlight, row.length);
-    if (sorted[i].risk_level) fills[RISK_COL] = sorted[i].risk_level;
-    return row.map((text, c) => ({ text, fill: fills[c] }));
+    return row.map((text, c) => ({
+      text,
+      fill: fills[c],
+      textHighlight: c === RISK_COL ? RISK_HIGHLIGHT[sorted[i].risk_level] : undefined,
+    }));
   });
 }
 

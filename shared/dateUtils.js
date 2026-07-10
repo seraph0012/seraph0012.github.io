@@ -15,3 +15,12 @@ export function dateWithWeekday(dateStr) {
   const w = weekdayLabel(dateStr);
   return w ? `${dateStr}（${w}）` : dateStr;
 }
+
+// dateStr: "YYYY-MM-DD" -> "x月y日"，PPT里"计划完成时间/最终计划完成时间"列要求的格式
+// (不是原始YYYY-MM-DD)
+export function monthDayLabel(dateStr) {
+  if (!dateStr) return "";
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return "";
+  return `${d.getUTCMonth() + 1}月${d.getUTCDate()}日`;
+}

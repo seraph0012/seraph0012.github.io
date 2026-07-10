@@ -323,6 +323,9 @@ document.getElementById("add-selected-btn").addEventListener("click", async () =
       planned_hours: tr.querySelector(".f-hours").value || null,
       priority_quadrant: tr.querySelector(".f-priority").value || null,
       execution_deadline: c.execution_deadline || null,
+      // 需协调的资源默认"无"，不留空(2026-07-10用户明确要求)——候选池阶段没有单独的输入框，
+      // 加入计划时直接写"无"，之后想改再去"本周计划(已保存)"表格里改
+      resources_needed: "无",
     });
   }
   if (toInsert.length === 0) {
@@ -374,7 +377,7 @@ async function loadSavedPlan() {
       <td><input type="date" class="f-start" value="${e.plan_start_date || ""}" min="${targetWeek.meeting_date}" max="${targetWeek.work_week_end || ""}" ${dis} /></td>
       <td><input type="date" class="f-deadline" value="${e.execution_deadline || ""}" min="${targetWeek.meeting_date}" max="${targetWeek.work_week_end || ""}" ${dis} /></td>
       <td><select class="f-priority" ${dis}>${priorityOptionsHtml(e.priority_quadrant)}</select></td>
-      <td><input type="text" class="f-resources" value="${e.resources_needed || ""}" style="width:8em" ${dis} /></td>
+      <td><input type="text" class="f-resources" value="${e.resources_needed || "无"}" style="width:8em" ${dis} /></td>
       <td><input type="checkbox" class="f-highlight" ${e.highlight ? "checked" : ""} ${dis} /></td>
       <td>${detail.detailUrl ? `<a href="${detail.detailUrl}" target="_blank" rel="noopener">编辑任务信息</a>` : ""}</td>
       <td><button type="button" class="secondary f-delete" ${dis}>删除</button></td>
@@ -388,7 +391,7 @@ async function loadSavedPlan() {
         plan_start_date: tr.querySelector(".f-start").value || null,
         execution_deadline: tr.querySelector(".f-deadline").value || null,
         priority_quadrant: tr.querySelector(".f-priority").value || null,
-        resources_needed: tr.querySelector(".f-resources").value || null,
+        resources_needed: tr.querySelector(".f-resources").value || "无",
         highlight: tr.querySelector(".f-highlight").checked,
       });
     };

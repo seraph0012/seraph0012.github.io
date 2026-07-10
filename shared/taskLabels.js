@@ -56,15 +56,18 @@ export async function buildLabelMap(items) {
 }
 
 // 来源表自身的英文status值 -> PPT里用的中文文案（跟weekly_task_entries.status用的
-// task_completion_status枚举本来就是中文不一样，这几张来源表的status是各自表定义的英文check约束）
+// task_completion_status枚举本来就是中文不一样，这几张来源表的status是各自表定义的英文check约束）。
+// PPT"完成情况"列只认task_completion_status枚举那4种(已完成/未完成/中止/未启动)，没有
+// "进行中"/"跳过"这两个来源表内部状态词——2026-07-10用户指出总体完成情况列不该出现"进行中"，
+// 是"进行中"就该按"未完成"处理；"跳过"同理归入"中止"。
 export const SOURCE_STATUS_LABEL = {
   pending: "未启动",
-  in_progress: "进行中",
+  in_progress: "未完成",
   done: "已完成",
-  skipped: "跳过",
+  skipped: "中止",
   stopped: "中止",
   not_started: "未启动",
-  open: "进行中",
+  open: "未完成",
   closed: "已完成",
 };
 

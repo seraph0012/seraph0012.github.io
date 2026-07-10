@@ -228,17 +228,19 @@ export const countWeeklyTaskEntriesForSource = (sourceColumn, sourceId) =>
     });
 // "最终计划完成时间"锁定判断：一旦这个任务被写进过任意一周的计划(appears_in='plan')，
 // 这个日期就要锁定，改动必须走订正说明——即使那一周已经过去/已经解锁编辑过其他字段，
-// 这个锁定也不解除(判断的是"有没有进入过计划"，不是"当前是否在锁定的周里")
-export const hasBeenPlanned = (sourceColumn, sourceId) =>
+// 这个锁定也不解除(判断的是"有没有进入过计划"，不是"当前是否在锁定的周里")。
+// 批量版本(2026-07-10性能修复)：原来tasks.js对每个可能锁定的任务单独发一次count请求
+// (N个任务=N次HTTP往返)，render一次表格(哪怕只是纯本地的展开详情，不涉及任何数据变化)
+// 都要重新打一遍，是页面"点什么都卡"的主因。改成两次bulk查询(source_queue_task_id一次、
+// source_milestone_id一次)取出"曾经进入过plan"的全部source_id集合，前端用Set.has()判断。
+export const listPlannedSourceIds = (sourceColumn) =>
   supabase
     .from("weekly_task_entries")
-    .select("id", { count: "exact", head: true })
-    .eq(sourceColumn, sourceId)
+    .select(sourceColumn)
     .eq("appears_in", "plan")
-    .then(({ count, error }) => {
-      if (error) throw error;
-      return count > 0;
-    });
+    .not(sourceColumn, "is", null)
+    .then(unwrap)
+    .then((rows) => new Set(rows.map((r) => r[sourceColumn])));
 
 export const listRecurringInstancesForWeek = (weekId) =>
   supabase

@@ -154,18 +154,59 @@ export function setCellFillHighlight(tcEl) {
   solidFill.appendChild(schemeClr);
   tcPr.appendChild(solidFill);
 }
-// 风险说明列专用：按risk_level(green/yellow/red)填对应底色，对应模板脚注"风险等级按
-// 绿色、黄色、红色依次递增"——跟highlight的强调色是两套独立的填色语义，互不覆盖
-const RISK_COLORS = { green: "92D050", yellow: "FFFF00", red: "FF0000" };
-export function setCellFillRisk(tcEl, riskLevel) {
+// ---- 文字高亮（对应PowerPoint"文本突出显示颜色"，是运行属性<a:highlight>，跟上面的
+// 单元格底色<a:tcPr><a:solidFill>是两回事）----
+// 风险说明/工作优先级两列要求的是"文字背景色"而不是整个单元格背景色(2026-07-10用户明确
+// 要求)：实测模板slide4(SUMMARY风险脚注)/slide6(PLAN优先级脚注)的图例文字本身就是用
+// <a:highlight>实现的(比如"红色"两个字的rPr里就带<a:highlight><a:srgbClr val="FF0000"/>
+// </a:highlight>)，直接照抄这个机制，颜色也直接用脚注里实测到的十六进制值。
+// <a:highlight>在rPr里的合法位置在fill/effect之后、下划线/字体/超链接元素之前，
+// 不能无脑append到最后，否则顺序不对。
+const RPR_TAGS_AFTER_HIGHLIGHT = [
+  "uLnTx", "uLn", "uFillTx", "uFill", "latin", "ea", "cs", "sym", "hlinkClick", "hlinkMouseOver", "rtl", "extLst",
+];
+function insertInRPrOrder(rPr, newEl) {
+  for (const child of Array.from(rPr.childNodes)) {
+    if (child.nodeType === 1 && RPR_TAGS_AFTER_HIGHLIGHT.includes(child.localName)) {
+      rPr.insertBefore(newEl, child);
+      return;
+    }
+  }
+  rPr.appendChild(newEl);
+}
+function ensureRPr(rEl) {
+  let rPr = rEl.getElementsByTagNameNS(NS_A, "rPr")[0];
+  if (!rPr) {
+    rPr = el(rEl.ownerDocument, "a:rPr");
+    rEl.insertBefore(rPr, rEl.firstChild);
+  }
+  return rPr;
+}
+function clearHighlightFromRPr(rPr) {
+  const existing = rPr.getElementsByTagNameNS(NS_A, "highlight")[0];
+  if (existing) rPr.removeChild(existing);
+}
+export function setTextHighlight(tcEl, colorHex) {
   const doc = tcEl.ownerDocument;
-  const tcPr = ensureTcPr(tcEl);
-  clearExistingFill(tcPr);
-  const solidFill = el(doc, "a:solidFill");
-  const srgb = el(doc, "a:srgbClr");
-  srgb.setAttribute("val", RISK_COLORS[riskLevel] || "FFFFFF");
-  solidFill.appendChild(srgb);
-  tcPr.appendChild(solidFill);
+  const txBody = tcEl.getElementsByTagNameNS(NS_A, "txBody")[0];
+  if (!txBody) return;
+  for (const r of Array.from(txBody.getElementsByTagNameNS(NS_A, "r"))) {
+    const rPr = ensureRPr(r);
+    clearHighlightFromRPr(rPr);
+    const highlight = el(doc, "a:highlight");
+    const srgb = el(doc, "a:srgbClr");
+    srgb.setAttribute("val", colorHex);
+    highlight.appendChild(srgb);
+    insertInRPrOrder(rPr, highlight);
+  }
+}
+export function clearTextHighlight(tcEl) {
+  const txBody = tcEl.getElementsByTagNameNS(NS_A, "txBody")[0];
+  if (!txBody) return;
+  for (const r of Array.from(txBody.getElementsByTagNameNS(NS_A, "r"))) {
+    const rPr = r.getElementsByTagNameNS(NS_A, "rPr")[0];
+    if (rPr) clearHighlightFromRPr(rPr);
+  }
 }
 
 // ---- 重置表格（对应reset_table()）：清除body行(不含表头行0、不含末尾说明行)的合并/填色/文字 ----
@@ -239,11 +280,12 @@ function cloneRowAsBlank(templateRow) {
 }
 
 // ---- 填表（对应fill_table()）----
-// rows: Array<Array<{text: string, fill?: "white"|"highlight"|"green"|"yellow"|"red"}>>，
+// rows: Array<Array<{text: string, fill?: "white"|"highlight", textHighlight?: "RRGGBB"}>>，
 // 每个子数组是一行的全部列（包括模块/类别等列，跟原脚本"部分列硬编码"的做法不同——本项目
 // 模块/类别是每行真实数据，由调用方在传入前按"同组延续行留空"的约定预处理好，供
-// mergeVerticalCells识别分组边界）。fill缺省是"white"；"highlight"是重点工作强调色，
-// green/yellow/red是风险说明列专用色，两套填色逻辑由调用方按列决定用哪个，互不干扰。
+// mergeVerticalCells识别分组边界）。fill缺省是"white"，"highlight"是重点工作强调色(单元格
+// 底色)；textHighlight是文字高亮色(十六进制，如风险说明/工作优先级列)，两者独立，
+// 一个管单元格底色一个管文字底色，互不干扰。
 export function fillTable(tblEl, rows) {
   const before = getRows(tblEl);
   const currBodyRows = before.length - 2; // 去掉表头行、末尾说明行
@@ -273,11 +315,12 @@ export function fillTable(tblEl, rows) {
     const cells = getCells(finalRows[r + 1]);
     const rowData = rows[r];
     for (let c = 0; c < rowData.length; c++) {
-      const { text, fill } = rowData[c];
+      const { text, fill, textHighlight } = rowData[c];
       replaceTextKeepFormat(cells[c], text ?? "");
       if (fill === "highlight") setCellFillHighlight(cells[c]);
-      else if (fill === "green" || fill === "yellow" || fill === "red") setCellFillRisk(cells[c], fill);
       else setCellFillWhite(cells[c]);
+      if (textHighlight) setTextHighlight(cells[c], textHighlight);
+      else clearTextHighlight(cells[c]);
     }
   }
 }

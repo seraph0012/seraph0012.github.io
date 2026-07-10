@@ -29,7 +29,7 @@ import {
   setTaskNumberOwner,
   suggestNextTaskNumber,
   deleteTaskNumber,
-  hasBeenPlanned,
+  listPlannedSourceIds,
   countWeeklyTaskEntriesForSource,
   deleteWeeklyTaskEntriesForSource,
 } from "./shared/db.js";
@@ -246,20 +246,22 @@ document.getElementById("wbs-level2-select").addEventListener("change", () => on
 
 // 循环任务标题/最终交付物按当次生成的月/周动态拼出来(2026-07-10用户要求)——
 // 模板本身只存"动词前缀(title_verb)+名词部分(title_noun)"，比如"制作"+"周例会PPT"，
-// 每次生成实例时用目标例会周的calendar_month(月份)+week_index_in_month(月内第几周)
-// 现算出"7月4周"这种限定语插进去。monthly频率没有level3(月内不再细分)，限定语只用月份。
-// 交付物不带动词前缀(交付物是"7月4周周例会PPT"，不是"制作7月4周周例会PPT")——判断任务是否
-// 最终完成，靠的正是拿每周填的"本周交付物"去精确匹配这个值，所以必须按当周现算，不能是
-// 模板级别固定不变的字符串。
-function monthWeekLabel(targetWeek, frequency) {
+// 每次生成实例时现算出"7月第4周"这种限定语插进去。monthly频率没有level3(月内不再细分)，
+// 限定语只用月份。交付物不带动词前缀(交付物是"7月第4周周例会PPT"，不是"制作7月第4周
+// 周例会PPT")——判断任务是否最终完成，靠的正是拿每周填的"本周交付物"去精确匹配这个值，
+// 所以必须按当周现算，不能是模板级别固定不变的字符串。
+// "第几周"用的是level3(这个循环任务在本月内的第几次执行，顺延递补算法算出来的)，不是
+// 自然日历的week_index_in_month——2026-07-10用户明确要求：这个数字表示的是"这个月第几次
+// 做这个周任务"，如果某周被跳过、后面顺延递补，编号跟自然周数就会不一样，要用编号本身。
+function monthWeekLabel(targetWeek, frequency, level3) {
   const month = Number(targetWeek.calendar_month.slice(5, 7));
-  return frequency === "monthly" ? `${month}月` : `${month}月${targetWeek.week_index_in_month}周`;
+  return frequency === "monthly" ? `${month}月` : `${month}月第${level3}周`;
 }
-function generateInstanceTitle(template, targetWeek) {
-  return `${template.title_verb}${monthWeekLabel(targetWeek, template.frequency)}${template.title_noun}`;
+function generateInstanceTitle(template, targetWeek, level3) {
+  return `${template.title_verb}${monthWeekLabel(targetWeek, template.frequency, level3)}${template.title_noun}`;
 }
-function generateInstanceDeliverable(template, targetWeek) {
-  return `${monthWeekLabel(targetWeek, template.frequency)}${template.title_noun}`;
+function generateInstanceDeliverable(template, targetWeek, level3) {
+  return `${monthWeekLabel(targetWeek, template.frequency, level3)}${template.title_noun}`;
 }
 
 function refreshRecurringPreview(templateId) {
@@ -273,8 +275,8 @@ function refreshRecurringPreview(templateId) {
   }
   const { level2, level3 } = computeNextNumber(t, t.recurring_task_instances, targetWeek);
   const fullNumber = level3 != null ? `${t.level1_number}.${level2}.${level3}` : `${t.level1_number}.${level2}`;
-  const title = generateInstanceTitle(t, targetWeek);
-  const deliverable = generateInstanceDeliverable(t, targetWeek);
+  const title = generateInstanceTitle(t, targetWeek, level3);
+  const deliverable = generateInstanceDeliverable(t, targetWeek, level3);
   previewEl.textContent = `将生成实例 ${fullNumber}「${title}」（对应例会周 ${targetWeek.natural_week_start}，最终交付物：${deliverable}）`;
   previewEl.className = "status";
 }
@@ -411,6 +413,8 @@ async function createRecurringNew() {
   });
   await setTaskNumberOwner(numberRow.level1_number, template.id);
   // 起始例会周只在这里用一次，直接生成第一个实例，不作为模板的持久字段保存
+  // due_date默认用work_week_end(本周最后工作日，默认周五)而不是meeting_date(本周工作
+  // 开始日，默认周一)——2026-07-10用户明确要求："本周完成"应该默认对应周五，不是周一
   const firstWeek = allWeeksRaw.find((w) => w.id === firstWeekId);
   const level3 = frequency === "monthly" ? null : 1;
   const fullNumber = level3 != null ? `${numberRow.level1_number}.1.${level3}` : `${numberRow.level1_number}.1`;
@@ -419,9 +423,9 @@ async function createRecurringNew() {
     level2_number: 1,
     level3_number: level3,
     full_number: fullNumber,
-    due_date: firstWeek.meeting_date,
-    title: generateInstanceTitle(template, firstWeek),
-    target_deliverable: generateInstanceDeliverable(template, firstWeek),
+    due_date: firstWeek.work_week_end,
+    title: generateInstanceTitle(template, firstWeek, level3),
+    target_deliverable: generateInstanceDeliverable(template, firstWeek, level3),
   });
 }
 
@@ -436,9 +440,9 @@ async function generateNextInstance(templateId) {
     level2_number: level2,
     level3_number: level3,
     full_number: fullNumber,
-    due_date: targetWeek.meeting_date,
-    title: generateInstanceTitle(t, targetWeek),
-    target_deliverable: generateInstanceDeliverable(t, targetWeek),
+    due_date: targetWeek.work_week_end,
+    title: generateInstanceTitle(t, targetWeek, level3),
+    target_deliverable: generateInstanceDeliverable(t, targetWeek, level3),
   });
 }
 
@@ -880,15 +884,26 @@ function buildDetailPanel(r, locked) {
   return wrap;
 }
 
-async function renderTaskTable() {
-  const rows = buildDisplayRows();
-  const leafRows = rows.filter((r) => r.kind === "leaf");
-  const lockable = leafRows.filter((r) => r.type !== "recurring");
-  const lockFlags = await Promise.all(
-    lockable.map((r) => hasBeenPlanned(r.type === "queue" ? "source_queue_task_id" : "source_milestone_id", r.item.id))
-  );
-  const lockMap = new Map(lockable.map((r, i) => [r.key, lockFlags[i]]));
+// "曾经进入过plan"的锁定状态缓存(2026-07-10性能修复)——只在reloadAll()真正重新拉取过
+// 数据库数据时才通过refreshLockMap()重新计算，renderTaskTable()本身不再发任何请求。
+// 之前的写法是renderTaskTable每次都对每个可能锁定的任务单独查一次(N个任务=N次HTTP往返)，
+// 导致哪怕只是本地展开/收起详情面板这种完全不涉及数据变化的操作也要卡一下等一串请求跑完。
+let lockMap = new Map();
 
+async function refreshLockMap() {
+  const leafRows = buildDisplayRows().filter((r) => r.kind === "leaf");
+  const lockable = leafRows.filter((r) => r.type !== "recurring");
+  const [plannedQueueIds, plannedMilestoneIds] = await Promise.all([
+    listPlannedSourceIds("source_queue_task_id"),
+    listPlannedSourceIds("source_milestone_id"),
+  ]);
+  lockMap = new Map(
+    lockable.map((r) => [r.key, (r.type === "queue" ? plannedQueueIds : plannedMilestoneIds).has(r.item.id)])
+  );
+}
+
+function renderTaskTable() {
+  const rows = buildDisplayRows();
   const tbody = document.getElementById("tasks-tbody");
   tbody.innerHTML = "";
   for (const r of rows) {
@@ -951,7 +966,8 @@ async function reloadAll() {
     listDeadlineProjects(),
     listRecurringTemplates(),
   ]);
-  await renderTaskTable();
+  await refreshLockMap();
+  renderTaskTable();
   const ownerSelect = document.getElementById("owner-select");
   const prevValue = ownerSelect.value;
   ownerSelect.innerHTML = ownerOptionsHtml();
