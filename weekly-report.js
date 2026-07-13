@@ -4,6 +4,7 @@ import { listModules, listPeople, listMeetingWeeks } from "./shared/db.js";
 import { mountSummarySection } from "./shared/summarySection.js";
 import { mountPlanSection } from "./shared/planSection.js";
 import { generatePptForWeek } from "./shared/pptGenerate.js";
+import { cacheFirst } from "./shared/localCache.js";
 
 const session = await requireAuth();
 if (!session) {
@@ -90,7 +91,35 @@ document.getElementById("generate-ppt-btn").addEventListener("click", async () =
 });
 
 async function init() {
-  const [modules, people, weeks] = await Promise.all([listModules(), listPeople(), listMeetingWeeks()]);
+  // modules/people/meeting_weeks用cache-first减少首屏等待——但summarySection/planSection
+  // 挂载时会把allModules/allPeople以值的形式传进去，挂载后没有"数据到了再更新"的接口，所以
+  // 跟tasks.js/modules.js那种"先用缓存渲染、fresh数据到了再重渲染"不一样：这里必须先拿到
+  // 一份可用数据(缓存或首次网络请求)才能挂载。有缓存就是瞬间完成，没缓存(第一次访问这个
+  // 浏览器)才会显示"加载中"占位(2026-07-13整体改动的一部分，
+  // 见tools/.claude/plans/plan-local-cache-loading-states.md)
+  const modulesCache = cacheFirst("modules", listModules);
+  const peopleCache = cacheFirst("people", listPeople);
+  const weeksCache = cacheFirst("meeting_weeks", listMeetingWeeks);
+  // 有缓存时不等待这三个后台revalidate请求就直接往下走，但仍要接一个catch，避免它们万一
+  // 失败时在控制台报"未处理的Promise rejection"噪音(反正只是优化用途，失败了下次访问再试)
+  modulesCache.freshPromise.catch(() => {});
+  peopleCache.freshPromise.catch(() => {});
+  weeksCache.freshPromise.catch(() => {});
+
+  let modules, people, weeks;
+  if (modulesCache.cached && peopleCache.cached && weeksCache.cached) {
+    modules = modulesCache.cached;
+    people = peopleCache.cached;
+    weeks = weeksCache.cached;
+  } else {
+    document.getElementById("summary-root").innerHTML = `<p class="status">加载中...</p>`;
+    document.getElementById("plan-root").innerHTML = `<p class="status">加载中...</p>`;
+    [modules, people, weeks] = await Promise.all([
+      modulesCache.freshPromise,
+      peopleCache.freshPromise,
+      weeksCache.freshPromise,
+    ]);
+  }
   allModules = modules;
   allWeeks = weeks.filter((w) => w.is_normal !== false);
 

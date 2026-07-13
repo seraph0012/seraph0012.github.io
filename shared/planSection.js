@@ -393,6 +393,7 @@ export function mountPlanSection(root, { allModules, allPeople }) {
 
   async function loadSavedPlan() {
     if (!week) return;
+    root.querySelector(".plan-tbody").innerHTML = `<tr><td colspan="17">加载中...</td></tr>`;
     const entries = await listWeeklyTaskEntries(week.id, "plan");
     const labelItems = entries.map((e) => ({ source_type: e.source_type, source_id: sourceIdOf(e) }));
     const detailMap = await buildSourceDetailMap(labelItems);

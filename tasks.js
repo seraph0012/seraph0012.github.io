@@ -35,6 +35,7 @@ import {
   countWeeklyTaskEntriesForSource,
   deleteWeeklyTaskEntriesForSource,
 } from "./shared/db.js";
+import { cacheFirst } from "./shared/localCache.js";
 
 const session = await requireAuth();
 if (!session) {
@@ -924,13 +925,12 @@ function buildDetailPanel(r, locked) {
 // 导致哪怕只是本地展开/收起详情面板这种完全不涉及数据变化的操作也要卡一下等一串请求跑完。
 let lockMap = new Map();
 
-async function refreshLockMap() {
+// 纯本地计算，不发请求——两个listPlannedSourceIds()查询结果由调用方(reloadAll)负责跟
+// queue/deadline/recurring的查询一起并发发出，这里只做"拿到结果后怎么算lockMap"这一步，
+// 拆开是为了让fetch阶段能合并成一波Promise.all(2026-07-13减少页面卡顿感整体改动的一部分)
+function computeLockMap(plannedQueueIds, plannedMilestoneIds) {
   const leafRows = buildDisplayRows().filter((r) => r.kind === "leaf");
   const lockable = leafRows.filter((r) => r.type !== "recurring");
-  const [plannedQueueIds, plannedMilestoneIds] = await Promise.all([
-    listPlannedSourceIds("source_queue_task_id"),
-    listPlannedSourceIds("source_milestone_id"),
-  ]);
   lockMap = new Map(
     lockable.map((r) => [r.key, (r.type === "queue" ? plannedQueueIds : plannedMilestoneIds).has(r.item.id)])
   );
@@ -1009,13 +1009,21 @@ function renderTaskTable() {
 
 // ---------------- 加载 ----------------
 
+// queue/deadline/recurring三张主数据表 + lockMap要用的两个锁定状态查询，原来是"先等三张表
+// 那一波、再等lockMap那一波"两波串行，改成一波5个请求一起并发(2026-07-13减少页面卡顿感
+// 整体改动的一部分，这几张表变化频繁不缓存，但至少不用再排队等两轮网络往返)
 async function reloadAll() {
-  [queueProjects, deadlineProjects, recurringTemplates] = await Promise.all([
+  const [qp, dp, rt, plannedQueueIds, plannedMilestoneIds] = await Promise.all([
     listQueueProjects(),
     listDeadlineProjects(),
     listRecurringTemplates(),
+    listPlannedSourceIds("source_queue_task_id"),
+    listPlannedSourceIds("source_milestone_id"),
   ]);
-  await refreshLockMap();
+  queueProjects = qp;
+  deadlineProjects = dp;
+  recurringTemplates = rt;
+  computeLockMap(plannedQueueIds, plannedMilestoneIds);
   renderTaskTable();
   const ownerSelect = document.getElementById("owner-select");
   const prevValue = ownerSelect.value;
@@ -1025,16 +1033,35 @@ async function reloadAll() {
 }
 
 async function init() {
-  const [modules, people, weeks] = await Promise.all([listModules(), listPeople(), listMeetingWeeks()]);
+  // modules/people/meeting_weeks是这个页面的"配套数据"(新建任务表单要用)，不是主数据，
+  // 用cache-first减少等待感；有缓存就先同步赋值，跟下面queue/deadline/recurring的fresh请求
+  // 一起并发跑，不再是"先等小表、再等大表"两波串行(2026-07-13整体改动，
+  // 见tools/.claude/plans/plan-local-cache-loading-states.md)
+  const modulesCache = cacheFirst("modules", listModules);
+  const peopleCache = cacheFirst("people", listPeople);
+  const weeksCache = cacheFirst("meeting_weeks", listMeetingWeeks);
+  if (modulesCache.cached) allModules = modulesCache.cached;
+  if (peopleCache.cached) allPeople = peopleCache.cached;
+  if (weeksCache.cached) {
+    allWeeksRaw = weeksCache.cached;
+    allWeeks = allWeeksRaw.filter((w) => w.is_normal !== false);
+  }
+
+  const weekSelect = document.getElementById("recurring-first-week");
+  weekSelect.innerHTML = weekOptionsHtml(null);
+  document.getElementById("tasks-tbody").innerHTML = `<tr><td colspan="11">加载中...</td></tr>`;
+
+  const [modules, people, weeks] = await Promise.all([
+    modulesCache.freshPromise,
+    peopleCache.freshPromise,
+    weeksCache.freshPromise,
+    reloadAll(),
+  ]);
   allModules = modules;
   allPeople = people;
   allWeeksRaw = weeks;
   allWeeks = weeks.filter((w) => w.is_normal !== false);
-
-  const weekSelect = document.getElementById("recurring-first-week");
-  weekSelect.innerHTML = weekOptionsHtml(null);
-
-  await reloadAll();
+  weekSelect.innerHTML = weekOptionsHtml(null); // 用最终的fresh数据重渲染一次，保证周下拉是准的
 }
 
 await init();

@@ -7,6 +7,7 @@ import {
   deleteMeetingWeek,
 } from "./shared/db.js";
 import { weekdayLabel } from "./shared/dateUtils.js";
+import { cacheFirst } from "./shared/localCache.js";
 
 const session = await requireAuth();
 if (!session) {
@@ -75,8 +76,26 @@ function recomputeMonthIndices(rows) {
   });
 }
 
-async function loadTable() {
-  const rows = await listMeetingWeeks();
+function renderRows(rows) {
+  const tbody = document.getElementById("weeks-tbody");
+  tbody.innerHTML = "";
+  for (const row of rows) {
+    tbody.appendChild(renderRow(row));
+  }
+}
+
+// useCache=true(默认，首次加载)时先用本地缓存立刻渲染一版(只是展示，不做下面的DB同步检查——
+// 同步要用最新数据判断，缓存版本可能本来就是待同步前的旧状态)，真实数据回来后正常走同步+渲染。
+// 跟modules.js/people.js的cache-first模式相同，见shared/localCache.js顶部注释。
+async function loadTable(useCache = true) {
+  const { cached, freshPromise } = cacheFirst("meeting_weeks", listMeetingWeeks);
+  if (useCache && cached) {
+    renderRows(recomputeMonthIndices(cached));
+  } else {
+    document.getElementById("weeks-tbody").innerHTML = `<tr><td colspan="8">加载中...</td></tr>`;
+  }
+
+  const rows = await freshPromise;
   const recomputed = recomputeMonthIndices(rows);
 
   // 跟数据库里存的值不一致就同步回去（比如刚改了meeting_date/is_normal，导致后面几周顺延）
@@ -95,11 +114,7 @@ async function loadTable() {
     );
   }
 
-  const tbody = document.getElementById("weeks-tbody");
-  tbody.innerHTML = "";
-  for (const row of recomputed) {
-    tbody.appendChild(renderRow(row));
-  }
+  renderRows(recomputed);
 }
 
 function renderRow(row) {
@@ -140,7 +155,7 @@ function renderRow(row) {
     try {
       await updateMeetingWeekFields(row.id, patch);
       // meeting_date/is_normal可能变了，归属月份/月内第几周要跟着重算，顺便可能影响本月后面几周
-      await loadTable();
+      await loadTable(false);
     } catch (err) {
       alert(`保存失败：${err.message}`);
     }
@@ -153,7 +168,7 @@ function renderRow(row) {
     if (!confirm(`确定删除 ${row.natural_week_start} 这一整周？如果已经有循环任务实例/周计划引用了这一周会删除失败。`)) return;
     try {
       await deleteMeetingWeek(row.id);
-      await loadTable();
+      await loadTable(false);
     } catch (err) {
       alert(`删除失败：${err.message}\n\n如果只是整周没开例会（比如春节假期），更推荐取消勾选"正常"而不是删除——取消勾选后，下周计划/循环任务实例生成会自动跳过这一周，同时还保留这周在日历里方便查看，删除则会把这一整周从日历里抹掉。`);
     }
@@ -172,7 +187,7 @@ document.getElementById("generate-form").addEventListener("submit", async (e) =>
     await bulkUpsertMeetingWeeks(rows);
     resultEl.textContent = `完成，${year}年共 ${rows.length} 个自然周（已存在的记录不会被覆盖）`;
     resultEl.className = "status ok";
-    await loadTable();
+    await loadTable(false);
   } catch (err) {
     resultEl.textContent = `失败：${err.message}`;
     resultEl.className = "status error";

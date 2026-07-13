@@ -255,6 +255,7 @@ export function mountSummarySection(root, { allModules }) {
 
   async function loadSummary() {
     if (!week) return;
+    root.querySelector(".summary-tbody").innerHTML = `<tr><td colspan="18">加载中...</td></tr>`;
     const entries = await listWeeklyTaskEntries(week.id, "summary");
     const labelItems = entries.map((e) => ({ source_type: e.source_type, source_id: sourceIdOf(e) }));
     const detailMap = await buildSourceDetailMap(labelItems);
