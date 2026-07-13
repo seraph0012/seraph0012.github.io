@@ -227,7 +227,7 @@ export function mountPlanSection(root, { allModules, allPeople }) {
       text += `${text ? " ｜ " : ""}⚠ 曾被订正：${week.plan_amendment_note}`;
     }
     statusEl.textContent = text;
-    statusEl.className = locked ? "status warn" : "status";
+    statusEl.className = locked ? "lock-status status warn" : "lock-status status";
   }
 
   async function validatePlanBeforeLock() {
@@ -326,19 +326,19 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     if (!week) return;
     if (isPlanLocked()) {
       resultEl.textContent = "本周计划已锁定，请先解锁再生成候选";
-      resultEl.className = "status warn";
+      resultEl.className = "candidates-result status warn";
       return;
     }
     resultEl.textContent = "生成中...";
-    resultEl.className = "status";
+    resultEl.className = "candidates-result status";
     try {
       candidates = await generateCandidatePool(week);
       renderCandidates();
       resultEl.textContent = candidates.length === 0 ? "没有新的候选任务（可能都已加入本周计划）" : `找到 ${candidates.length} 条候选`;
-      resultEl.className = "status ok";
+      resultEl.className = "candidates-result status ok";
     } catch (err) {
       resultEl.textContent = `失败：${err.message}`;
-      resultEl.className = "status error";
+      resultEl.className = "candidates-result status error";
     }
   });
 
@@ -346,7 +346,7 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     const resultEl = root.querySelector(".add-result");
     if (isPlanLocked()) {
       resultEl.textContent = "本周计划已锁定，请先解锁再加入";
-      resultEl.className = "status warn";
+      resultEl.className = "add-result status warn";
       return;
     }
     const rows = [...root.querySelectorAll(".candidates-tbody tr")];
@@ -371,23 +371,23 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     }
     if (toInsert.length === 0) {
       resultEl.textContent = "没有勾选任何候选";
-      resultEl.className = "status warn";
+      resultEl.className = "add-result status warn";
       return;
     }
     resultEl.textContent = "写入中...";
-    resultEl.className = "status";
+    resultEl.className = "add-result status";
     try {
       for (const row of toInsert) {
         await createWeeklyTaskEntry(row);
       }
       resultEl.textContent = `已加入 ${toInsert.length} 条`;
-      resultEl.className = "status ok";
+      resultEl.className = "add-result status ok";
       candidates = await generateCandidatePool(week);
       renderCandidates();
       await loadSavedPlan();
     } catch (err) {
       resultEl.textContent = `失败：${err.message}`;
-      resultEl.className = "status error";
+      resultEl.className = "add-result status error";
     }
   });
 

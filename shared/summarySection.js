@@ -154,7 +154,7 @@ export function mountSummarySection(root, { allModules }) {
       text += `${text ? " ｜ " : ""}⚠ 曾被订正：${week.summary_amendment_note}`;
     }
     statusEl.textContent = text;
-    statusEl.className = locked ? "status warn" : "status";
+    statusEl.className = locked ? "lock-status status warn" : "lock-status status";
   }
 
   async function validateSummaryBeforeLock() {
@@ -214,11 +214,11 @@ export function mountSummarySection(root, { allModules }) {
     const resultEl = root.querySelector(".skeleton-result");
     if (isSummaryLocked()) {
       resultEl.textContent = "本周总结已锁定，请先解锁再生成";
-      resultEl.className = "status warn";
+      resultEl.className = "skeleton-result status warn";
       return;
     }
     resultEl.textContent = "生成中...";
-    resultEl.className = "status";
+    resultEl.className = "skeleton-result status";
     try {
       const [planEntries, existingSummary] = await Promise.all([
         listWeeklyTaskEntries(week.id, "plan"),
@@ -243,12 +243,12 @@ export function mountSummarySection(root, { allModules }) {
         });
       }
       resultEl.textContent = toCreate.length === 0 ? "本周计划条目都已生成过总结骨架" : `已生成 ${toCreate.length} 条`;
-      resultEl.className = "status ok";
+      resultEl.className = "skeleton-result status ok";
       await loadSummary();
       await populateUnplannedOptions();
     } catch (err) {
       resultEl.textContent = `失败：${err.message}`;
-      resultEl.className = "status error";
+      resultEl.className = "skeleton-result status error";
     }
   }
   root.querySelector(".generate-skeleton-btn").addEventListener("click", generateSkeleton);
@@ -389,18 +389,18 @@ export function mountSummarySection(root, { allModules }) {
     const resultEl = root.querySelector(".add-unplanned-result");
     if (isSummaryLocked()) {
       resultEl.textContent = "本周总结已锁定，请先解锁再添加";
-      resultEl.className = "status warn";
+      resultEl.className = "add-unplanned-result status warn";
       return;
     }
     const idx = Number(root.querySelector(".unplanned-select").value);
     const c = unplannedCandidates[idx];
     if (!c) {
       resultEl.textContent = "请先选择一个任务";
-      resultEl.className = "status warn";
+      resultEl.className = "add-unplanned-result status warn";
       return;
     }
     resultEl.textContent = "添加中...";
-    resultEl.className = "status";
+    resultEl.className = "add-unplanned-result status";
     try {
       const soleModuleId = allModules.length === 1 ? allModules[0].id : null;
       await createWeeklyTaskEntry({
@@ -414,12 +414,12 @@ export function mountSummarySection(root, { allModules }) {
         deliverable_this_week: c.deliverable_this_week,
       });
       resultEl.textContent = "已添加";
-      resultEl.className = "status ok";
+      resultEl.className = "add-unplanned-result status ok";
       await populateUnplannedOptions();
       await loadSummary();
     } catch (err) {
       resultEl.textContent = `失败：${err.message}`;
-      resultEl.className = "status error";
+      resultEl.className = "add-unplanned-result status error";
     }
   });
   root.querySelector(".refresh-unplanned-btn").addEventListener("click", populateUnplannedOptions);
