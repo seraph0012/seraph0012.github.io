@@ -37,12 +37,23 @@ function renderWeekInfo() {
 let summaryCtrl = null;
 let planCtrl = null;
 
+// 切周期间把选择器disabled掉，防止用户在上一次切换的异步查询(loadSummary/loadSavedPlan等)
+// 还没返回时又快速切到另一个周——两次setWeek()的DOM写入会交错，后完成的那次(不一定是
+// 用户最后选的那个周)会把表格覆盖成它自己的数据，表现为"切换后不显示对应周的数据"/
+// "看起来好像切换无效"(2026-07-13用户实测发现的真实race condition)。disabled能完全
+// 杜绝这个问题，因为下一次change事件不可能在上一次applyWeek()彻底跑完前触发。
 async function applyWeek(week) {
-  targetWeek = week;
-  previousWeek = week ? findPreviousWeek(week) : null;
-  renderWeekInfo();
-  await summaryCtrl.setWeek(previousWeek);
-  await planCtrl.setWeek(targetWeek, previousWeek);
+  const weekSelect = document.getElementById("week-select");
+  weekSelect.disabled = true;
+  try {
+    targetWeek = week;
+    previousWeek = week ? findPreviousWeek(week) : null;
+    renderWeekInfo();
+    await summaryCtrl.setWeek(previousWeek);
+    await planCtrl.setWeek(targetWeek, previousWeek);
+  } finally {
+    weekSelect.disabled = false;
+  }
 }
 
 document.getElementById("generate-ppt-btn").addEventListener("click", async () => {
