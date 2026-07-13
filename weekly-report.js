@@ -40,10 +40,17 @@ let planCtrl = null;
 // 切周期间把选择器disabled掉，防止用户在上一次切换的异步查询(loadSummary/loadSavedPlan等)
 // 还没返回时又快速切到另一个周——两次setWeek()的DOM写入会交错，后完成的那次(不一定是
 // 用户最后选的那个周)会把表格覆盖成它自己的数据，表现为"切换后不显示对应周的数据"/
-// "看起来好像切换无效"(2026-07-13用户实测发现的真实race condition)。disabled能完全
-// 杜绝这个问题，因为下一次change事件不可能在上一次applyWeek()彻底跑完前触发。
+// "看起来好像切换无效"。
+//
+// try/catch必须包在这里(而不是让异常往外抛)：init()里第一次调用applyWeek(defaultWeek)
+// 是在"weekSelect.addEventListener('change',...)"注册之前await的，如果这次调用抛出未捕获
+// 异常，init()会直接在这一行中断，后面注册change监听器的代码根本不会执行——这样往后不管
+// 怎么切换选择器都不会有任何反应(2026-07-13用户实测到的真实现象："只有刚刚打开页面的时候
+// 是禁用选择器的，后续切换周就没有任何效果了")。这里兜住异常，保证init()一定能往下走到
+// addEventListener，并把错误信息显示出来方便定位，而不是静默吞掉。
 async function applyWeek(week) {
   const weekSelect = document.getElementById("week-select");
+  const infoEl = document.getElementById("week-info");
   weekSelect.disabled = true;
   try {
     targetWeek = week;
@@ -51,6 +58,10 @@ async function applyWeek(week) {
     renderWeekInfo();
     await summaryCtrl.setWeek(previousWeek);
     await planCtrl.setWeek(targetWeek, previousWeek);
+  } catch (err) {
+    console.error("[weekly-report] 切换目标周失败", err);
+    infoEl.textContent = `切换周失败：${err.message}（详情见浏览器控制台F12）`;
+    infoEl.className = "status error";
   } finally {
     weekSelect.disabled = false;
   }
