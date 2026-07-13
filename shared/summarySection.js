@@ -1,0 +1,444 @@
+// 从weekly-summary.js抽取出来的"总结区块"挂载函数，供weekly-report.js复用。
+// 内部一律用 root.querySelector('.xxx')（class，不用id）操作DOM，这样可以在同一个页面里
+// 跟planSection.js的区块共存而不撞id（2026-07-13周报工作流重新设计，见
+// tools/.claude/plans/plan-weekly-report-unified-workflow.md）。
+import {
+  listQueueProjects,
+  listDeadlineProjects,
+  listRecurringInstancesForWeek,
+  listWeeklyTaskEntries,
+  createWeeklyTaskEntry,
+  updateWeeklyTaskEntry,
+  deleteWeeklyTaskEntry,
+  updateMeetingWeekFields,
+} from "./db.js";
+import {
+  SOURCE_LABEL,
+  sourceIdOf,
+  sourceColumnFor,
+  buildLabelMap,
+  buildSourceDetailMap,
+  syncSourceStatus,
+} from "./taskLabels.js";
+import { validateSourceDetail, validateOwnFields } from "./entryValidation.js";
+
+const SUMMARY_REQUIRED_FIELDS = [
+  ["module_id", "模块"],
+  ["summary_category", "类别"],
+  ["owner", "责任人"],
+  ["deliverable_this_week", "上周交付材料"],
+  ["actual_hours", "实际用时"],
+  ["status", "完成情况"],
+];
+function conditionalFieldErrors(e) {
+  if (e.status !== "未完成") return [];
+  const errs = [];
+  if (!e.incomplete_reason) errs.push("未填未完成原因");
+  if (!e.rectification_measures) errs.push("未填整改措施");
+  if (!e.risk_level) errs.push("未填风险说明");
+  return errs;
+}
+
+const STATUS_OPTIONS = ["", "已完成", "未完成", "中止", "未启动"];
+const RISK_OPTIONS = [
+  ["", "(未设置)"],
+  ["green", "低"],
+  ["yellow", "中"],
+  ["red", "高"],
+];
+
+const TEMPLATE = `
+  <p class="no-week-msg status" hidden>没有更早的例会周，跳过"上周总结"。</p>
+  <div class="summary-body">
+    <div class="lock-bar inline-form">
+      <button type="button" class="generate-skeleton-btn">生成/刷新总结骨架</button>
+      <button type="button" class="lock-btn">锁定本周总结</button>
+      <button type="button" class="unlock-btn secondary" hidden>解锁编辑</button>
+    </div>
+    <p class="skeleton-result status"></p>
+    <p class="lock-status status"></p>
+    <form class="unlock-form inline-form" hidden>
+      <input type="text" class="unlock-note" placeholder="订正说明（本周总结已锁定，说明这次要改什么/为什么）" style="min-width:320px" required />
+      <button type="button" class="unlock-confirm-btn">确认订正</button>
+      <button type="button" class="unlock-cancel-btn secondary">取消</button>
+    </form>
+
+    <div class="unplanned-block">
+      <h3>记录计划外完成的任务</h3>
+      <p>"计划外"就是没出现在本周计划里、但本周确实做了的任务，不用单独登记——从下面选一个已有的顺序队列/截止日期/循环任务即可，"计划内/计划外"会自动判定。如果这个任务压根还没建过，先去<a href="tasks.html" target="_blank" rel="noopener">任务管理</a>新建，回来刷新这里的下拉再选。</p>
+      <form class="add-unplanned-form inline-form">
+        <select class="unplanned-select" style="min-width:320px"></select>
+        <button type="button" class="add-unplanned-btn">添加为计划外</button>
+        <button type="button" class="refresh-unplanned-btn secondary">刷新列表</button>
+      </form>
+      <p class="add-unplanned-result status"></p>
+    </div>
+
+    <h3>总结条目</h3>
+    <p>"任务1/2/3级"、"最终目标交付物"、"最终完成情况"、"最终计划完成时间"是在对应项目/任务详情页维护的字段，这里只读展示（"最终完成情况"会在你填写下面的"完成情况"时自动同步过去），改动请点"编辑任务信息"跳转过去。</p>
+    <div class="table-scroll">
+    <table>
+      <thead>
+        <tr>
+          <th>任务1级</th>
+          <th>任务2级</th>
+          <th>任务3级</th>
+          <th>最终目标交付物</th>
+          <th>最终完成情况</th>
+          <th>最终计划完成时间</th>
+          <th>类别</th>
+          <th>模块</th>
+          <th>责任人</th>
+          <th>本周交付材料</th>
+          <th>实际用时</th>
+          <th>完成情况</th>
+          <th>未完成原因</th>
+          <th>整改措施</th>
+          <th>风险</th>
+          <th>重点</th>
+          <th></th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody class="summary-tbody"></tbody>
+    </table>
+    </div>
+  </div>
+`;
+
+export function mountSummarySection(root, { allModules }) {
+  root.innerHTML = TEMPLATE;
+
+  let week = null;
+  let unplannedCandidates = [];
+
+  function moduleOptionsHtml(selectedId) {
+    return (
+      `<option value="">(未分类)</option>` +
+      allModules
+        .map((m) => `<option value="${m.id}" ${m.id === selectedId ? "selected" : ""}>${m.name}</option>`)
+        .join("")
+    );
+  }
+  function statusOptionsHtml(selected) {
+    return STATUS_OPTIONS.map(
+      (s) => `<option value="${s}" ${s === (selected || "") ? "selected" : ""}>${s || "(未设置)"}</option>`
+    ).join("");
+  }
+  function riskOptionsHtml(selected) {
+    return RISK_OPTIONS.map(
+      ([v, l]) => `<option value="${v}" ${v === (selected || "") ? "selected" : ""}>${l}</option>`
+    ).join("");
+  }
+
+  function isSummaryLocked() {
+    return !!week?.summary_locked_at;
+  }
+
+  function renderLockUI() {
+    const lockBtn = root.querySelector(".lock-btn");
+    const unlockBtn = root.querySelector(".unlock-btn");
+    const unlockForm = root.querySelector(".unlock-form");
+    const statusEl = root.querySelector(".lock-status");
+    unlockForm.hidden = true;
+    if (!week) return;
+
+    const locked = isSummaryLocked();
+    lockBtn.hidden = locked;
+    unlockBtn.hidden = !locked;
+
+    let text = locked
+      ? `🔒 本周总结已锁定（${new Date(week.summary_locked_at).toLocaleString()}），编辑前需先解锁`
+      : "";
+    if (week.summary_amendment_note) {
+      text += `${text ? " ｜ " : ""}⚠ 曾被订正：${week.summary_amendment_note}`;
+    }
+    statusEl.textContent = text;
+    statusEl.className = locked ? "status warn" : "status";
+  }
+
+  async function validateSummaryBeforeLock() {
+    const entries = await listWeeklyTaskEntries(week.id, "summary");
+    const labelItems = entries.map((e) => ({ source_type: e.source_type, source_id: sourceIdOf(e) }));
+    const [labelMap, detailMap] = await Promise.all([buildLabelMap(labelItems), buildSourceDetailMap(labelItems)]);
+    const problems = [];
+    for (const e of entries) {
+      const label = labelMap.get(`${e.source_type}:${sourceIdOf(e)}`) || "(未知任务)";
+      const detail = detailMap.get(`${e.source_type}:${sourceIdOf(e)}`);
+      const errs = [
+        ...validateOwnFields(e, SUMMARY_REQUIRED_FIELDS),
+        ...conditionalFieldErrors(e),
+        ...validateSourceDetail(e, detail),
+      ];
+      if (errs.length > 0) problems.push(`${label}：${errs.join("；")}`);
+    }
+    return problems;
+  }
+
+  root.querySelector(".lock-btn").addEventListener("click", async () => {
+    const problems = await validateSummaryBeforeLock();
+    if (problems.length > 0) {
+      alert(`本周总结还有内容没填完，暂不能锁定：\n\n${problems.join("\n")}`);
+      return;
+    }
+    const updated = await updateMeetingWeekFields(week.id, { summary_locked_at: new Date().toISOString() });
+    Object.assign(week, updated);
+    renderLockUI();
+    await loadSummary();
+  });
+
+  root.querySelector(".unlock-btn").addEventListener("click", () => {
+    root.querySelector(".unlock-form").hidden = false;
+  });
+  root.querySelector(".unlock-cancel-btn").addEventListener("click", () => {
+    root.querySelector(".unlock-form").hidden = true;
+  });
+  root.querySelector(".unlock-confirm-btn").addEventListener("click", async () => {
+    const noteEl = root.querySelector(".unlock-note");
+    const note = noteEl.value.trim();
+    if (!note) {
+      alert("请填写订正说明");
+      return;
+    }
+    const updated = await updateMeetingWeekFields(week.id, {
+      summary_locked_at: null,
+      summary_amendment_note: note,
+    });
+    Object.assign(week, updated);
+    noteEl.value = "";
+    renderLockUI();
+    await loadSummary();
+  });
+
+  async function generateSkeleton() {
+    const resultEl = root.querySelector(".skeleton-result");
+    if (isSummaryLocked()) {
+      resultEl.textContent = "本周总结已锁定，请先解锁再生成";
+      resultEl.className = "status warn";
+      return;
+    }
+    resultEl.textContent = "生成中...";
+    resultEl.className = "status";
+    try {
+      const [planEntries, existingSummary] = await Promise.all([
+        listWeeklyTaskEntries(week.id, "plan"),
+        listWeeklyTaskEntries(week.id, "summary"),
+      ]);
+      const alreadySummarized = new Set(existingSummary.map((e) => `${e.source_type}:${sourceIdOf(e)}`));
+      const toCreate = planEntries.filter((p) => !alreadySummarized.has(`${p.source_type}:${sourceIdOf(p)}`));
+      const soleModuleId = allModules.length === 1 ? allModules[0].id : null;
+
+      for (const p of toCreate) {
+        await createWeeklyTaskEntry({
+          meeting_week_id: week.id,
+          appears_in: "summary",
+          source_type: p.source_type,
+          [sourceColumnFor(p.source_type)]: sourceIdOf(p),
+          module_id: p.module_id ?? soleModuleId,
+          summary_category: "计划内",
+          owner: p.owner,
+          deliverable_this_week: p.deliverable_this_week,
+          actual_hours: p.planned_hours,
+          highlight: p.highlight,
+        });
+      }
+      resultEl.textContent = toCreate.length === 0 ? "本周计划条目都已生成过总结骨架" : `已生成 ${toCreate.length} 条`;
+      resultEl.className = "status ok";
+      await loadSummary();
+      await populateUnplannedOptions();
+    } catch (err) {
+      resultEl.textContent = `失败：${err.message}`;
+      resultEl.className = "status error";
+    }
+  }
+  root.querySelector(".generate-skeleton-btn").addEventListener("click", generateSkeleton);
+
+  async function loadSummary() {
+    if (!week) return;
+    const entries = await listWeeklyTaskEntries(week.id, "summary");
+    const labelItems = entries.map((e) => ({ source_type: e.source_type, source_id: sourceIdOf(e) }));
+    const detailMap = await buildSourceDetailMap(labelItems);
+
+    const tbody = root.querySelector(".summary-tbody");
+    tbody.innerHTML = "";
+    const dis = isSummaryLocked() ? "disabled" : "";
+    for (const e of entries) {
+      const detail = detailMap.get(`${e.source_type}:${sourceIdOf(e)}`) || {};
+      const disReason = dis || e.status !== "未完成" ? "disabled" : "";
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td class="task-col readonly-col">${detail.level1Text || ""}</td>
+        <td class="task-col readonly-col">${detail.level2Text || ""}</td>
+        <td class="task-col readonly-col">${detail.level3Text || ""}</td>
+        <td class="task-col readonly-col">${detail.targetDeliverable || ""}</td>
+        <td class="readonly-col">${detail.sourceStatus || ""}</td>
+        <td class="readonly-col">${detail.completionDate || ""}</td>
+        <td class="readonly-col">${e.summary_category || ""}</td>
+        <td><select class="f-module" ${dis}>${moduleOptionsHtml(e.module_id)}</select></td>
+        <td><input type="text" class="f-owner" value="${e.owner || ""}" style="width:5em" ${dis} /></td>
+        <td><input type="text" class="f-deliverable" value="${e.deliverable_this_week || ""}" style="width:12em" ${dis} /></td>
+        <td><input type="number" class="f-hours" step="0.5" value="${e.actual_hours ?? ""}" style="width:4em" ${dis} /></td>
+        <td><select class="f-status" ${dis}>${statusOptionsHtml(e.status)}</select></td>
+        <td><input type="text" class="f-reason" value="${e.incomplete_reason || ""}" style="width:10em" ${disReason} /></td>
+        <td><input type="text" class="f-rectify" value="${e.rectification_measures || ""}" style="width:10em" ${disReason} /></td>
+        <td><select class="f-risk" ${disReason}>${riskOptionsHtml(e.risk_level)}</select></td>
+        <td><input type="checkbox" class="f-highlight" ${e.highlight ? "checked" : ""} ${dis} /></td>
+        <td>${detail.detailUrl ? `<a href="${detail.detailUrl}" target="_blank" rel="noopener">编辑任务信息</a>` : ""}</td>
+        <td><button type="button" class="secondary f-delete" ${dis}>删除</button></td>
+      `;
+      const save = async () => {
+        const status = tr.querySelector(".f-status").value || null;
+        const isIncomplete = status === "未完成";
+        await updateWeeklyTaskEntry(e.id, {
+          module_id: tr.querySelector(".f-module").value || null,
+          owner: tr.querySelector(".f-owner").value || null,
+          deliverable_this_week: tr.querySelector(".f-deliverable").value || null,
+          actual_hours: tr.querySelector(".f-hours").value || null,
+          status,
+          incomplete_reason: isIncomplete ? tr.querySelector(".f-reason").value || null : null,
+          rectification_measures: isIncomplete ? tr.querySelector(".f-rectify").value || null : null,
+          risk_level: isIncomplete ? tr.querySelector(".f-risk").value || null : null,
+          highlight: tr.querySelector(".f-highlight").checked,
+        });
+        if (status) await syncSourceStatus(e.source_type, sourceIdOf(e), status);
+      };
+      tr.querySelectorAll("select:not(.f-status), input").forEach((el) => el.addEventListener("change", save));
+      tr.querySelector(".f-status").addEventListener("change", async () => {
+        await save();
+        await loadSummary();
+      });
+      tr.querySelector(".f-delete").addEventListener("click", async () => {
+        await deleteWeeklyTaskEntry(e.id);
+        await loadSummary();
+        await populateUnplannedOptions();
+      });
+      tbody.appendChild(tr);
+    }
+  }
+
+  async function populateUnplannedOptions() {
+    const sel = root.querySelector(".unplanned-select");
+    if (!week) {
+      sel.innerHTML = "";
+      unplannedCandidates = [];
+      return;
+    }
+    sel.innerHTML = `<option value="">加载中...</option>`;
+    const [queueProjects, deadlineProjects, recurringInstances, planEntries, summaryEntries] = await Promise.all([
+      listQueueProjects(),
+      listDeadlineProjects(),
+      listRecurringInstancesForWeek(week.id),
+      listWeeklyTaskEntries(week.id, "plan"),
+      listWeeklyTaskEntries(week.id, "summary"),
+    ]);
+    const excluded = new Set([
+      ...planEntries.map((e) => `${e.source_type}:${sourceIdOf(e)}`),
+      ...summaryEntries.map((e) => `${e.source_type}:${sourceIdOf(e)}`),
+    ]);
+
+    const candidates = [];
+    for (const p of queueProjects) {
+      for (const t of p.queue_project_tasks) {
+        if (t.status === "done" || t.status === "skipped") continue;
+        if (excluded.has(`queue_task:${t.id}`)) continue;
+        candidates.push({
+          source_type: "queue_task",
+          source_id: t.id,
+          module_id: t.module_id,
+          owner: t.owner,
+          deliverable_this_week: t.target_deliverable || "",
+        });
+      }
+    }
+    for (const p of deadlineProjects) {
+      for (const m of p.deadline_milestones) {
+        if (m.status === "done" || m.status === "stopped") continue;
+        if (excluded.has(`milestone:${m.id}`)) continue;
+        candidates.push({
+          source_type: "milestone",
+          source_id: m.id,
+          module_id: m.module_id,
+          owner: m.owner,
+          deliverable_this_week: m.target_deliverable || "",
+        });
+      }
+    }
+    for (const inst of recurringInstances) {
+      if (excluded.has(`recurring_instance:${inst.id}`)) continue;
+      candidates.push({
+        source_type: "recurring_instance",
+        source_id: inst.id,
+        module_id: inst.recurring_task_templates.module_id,
+        owner: inst.recurring_task_templates.owner,
+        deliverable_this_week: inst.target_deliverable || "",
+      });
+    }
+
+    const labelMap = await buildLabelMap(candidates.map((c) => ({ source_type: c.source_type, source_id: c.source_id })));
+    for (const c of candidates) {
+      c.label = labelMap.get(`${c.source_type}:${c.source_id}`) || "(未知任务)";
+    }
+    unplannedCandidates = candidates;
+    sel.innerHTML =
+      candidates.length === 0
+        ? `<option value="">(没有可选的任务——都已在本周计划/总结里，或者还没建过)</option>`
+        : candidates.map((c, i) => `<option value="${i}">${SOURCE_LABEL[c.source_type]} ${c.label}</option>`).join("");
+  }
+
+  root.querySelector(".add-unplanned-btn").addEventListener("click", async () => {
+    const resultEl = root.querySelector(".add-unplanned-result");
+    if (isSummaryLocked()) {
+      resultEl.textContent = "本周总结已锁定，请先解锁再添加";
+      resultEl.className = "status warn";
+      return;
+    }
+    const idx = Number(root.querySelector(".unplanned-select").value);
+    const c = unplannedCandidates[idx];
+    if (!c) {
+      resultEl.textContent = "请先选择一个任务";
+      resultEl.className = "status warn";
+      return;
+    }
+    resultEl.textContent = "添加中...";
+    resultEl.className = "status";
+    try {
+      const soleModuleId = allModules.length === 1 ? allModules[0].id : null;
+      await createWeeklyTaskEntry({
+        meeting_week_id: week.id,
+        appears_in: "summary",
+        source_type: c.source_type,
+        [sourceColumnFor(c.source_type)]: c.source_id,
+        module_id: c.module_id ?? soleModuleId,
+        summary_category: "计划外",
+        owner: c.owner,
+        deliverable_this_week: c.deliverable_this_week,
+      });
+      resultEl.textContent = "已添加";
+      resultEl.className = "status ok";
+      await populateUnplannedOptions();
+      await loadSummary();
+    } catch (err) {
+      resultEl.textContent = `失败：${err.message}`;
+      resultEl.className = "status error";
+    }
+  });
+  root.querySelector(".refresh-unplanned-btn").addEventListener("click", populateUnplannedOptions);
+
+  async function setWeek(w) {
+    week = w;
+    const noWeekMsg = root.querySelector(".no-week-msg");
+    const body = root.querySelector(".summary-body");
+    if (!week) {
+      noWeekMsg.hidden = false;
+      body.hidden = true;
+      return;
+    }
+    noWeekMsg.hidden = true;
+    body.hidden = false;
+    renderLockUI();
+    await loadSummary();
+    await populateUnplannedOptions();
+  }
+
+  return { setWeek };
+}

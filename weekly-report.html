@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>周报自动化系统 — 制作周报</title>
+  <link rel="stylesheet" href="./shared/style.css" />
+</head>
+<body class="wide-page">
+  <nav id="app-nav"></nav>
+
+  <h1>制作周报</h1>
+  <p>选一个目标例会周，下面会自动展示"上周总结"（上一个例会周）和"本周计划"（这个例会周），填完两块就可以直接在本页生成PPT——不用再分别去别的页面各选一次目标周。想回看/订正更早的周，把上面的目标周改成"那一周的下一周"即可（跟总结在下次例会才汇报的语义一致）。</p>
+
+  <section>
+    <h2>目标例会周</h2>
+    <form class="inline-form" onsubmit="return false">
+      <select id="week-select"></select>
+    </form>
+    <p id="week-info" class="status"></p>
+  </section>
+
+  <section>
+    <h2>① 上周总结</h2>
+    <div id="summary-root"></div>
+  </section>
+
+  <section>
+    <h2>② 本周计划</h2>
+    <div id="plan-root"></div>
+  </section>
+
+  <section>
+    <h2>③ 生成PPT</h2>
+    <p><strong>已知限制</strong>："未启动/中止工作"表目前始终为空——app里还没有把某条计划标记为"中止"写入
+    <code>appears_in='stopped'</code> 的入口，这部分仍需手动在PPT里补充。</p>
+    <button type="button" id="generate-ppt-btn">生成并下载PPT</button>
+    <p id="generate-result" class="status"></p>
+  </section>
+
+  <script type="module" src="./weekly-report.js"></script>
+</body>
+</html>
