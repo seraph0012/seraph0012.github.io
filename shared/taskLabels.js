@@ -63,15 +63,15 @@ export async function buildLabelMap(items) {
 // PPT"完成情况"列只认task_completion_status枚举那4种(已完成/未完成/中止/未启动)，没有
 // "进行中"/"跳过"这两个来源表内部状态词——2026-07-10用户指出总体完成情况列不该出现"进行中"，
 // 是"进行中"就该按"未完成"处理；"跳过"同理归入"中止"。
+// 2026-07-14：`0019_normalize_not_started_status.sql`把三张源表的"未开始"状态统一收敛到
+// not_started（此前queue_project_tasks单独用pending、跟另外两张表不一致，是历史遗留），
+// 这里删掉不再会出现的pending；open/closed是已删除的ad_hoc_tasks表的遗留死映射，一并删除。
 export const SOURCE_STATUS_LABEL = {
-  pending: "未启动",
+  not_started: "未启动",
   in_progress: "未完成",
   done: "已完成",
   skipped: "中止",
   stopped: "中止",
-  not_started: "未启动",
-  open: "未完成",
-  closed: "已完成",
 };
 
 // ppt-export专用：反查PPT里"任务1/2/3级"（编号+标题拼接文本，实测sample_ppt.pptx历史数据
@@ -158,7 +158,7 @@ export async function buildSourceDetailMap(items) {
 // weekly_task_entries.status用的是task_completion_status枚举(已完成/未完成/中止/未启动)，
 // 四张源表各自的status用的是不同的英文check约束，这里做映射。
 const SOURCE_STATUS_FOR_COMPLETION = {
-  queue_task: { 已完成: "done", 未完成: "in_progress", 中止: "skipped", 未启动: "pending" },
+  queue_task: { 已完成: "done", 未完成: "in_progress", 中止: "skipped", 未启动: "not_started" },
   milestone: { 已完成: "done", 未完成: "in_progress", 中止: "stopped", 未启动: "not_started" },
   recurring_instance: { 已完成: "done", 未完成: "in_progress", 中止: "stopped", 未启动: "not_started" },
 };

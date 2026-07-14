@@ -36,6 +36,7 @@ import {
   deleteWeeklyTaskEntriesForSource,
 } from "./shared/db.js";
 import { cacheFirst } from "./shared/localCache.js";
+import { SOURCE_STATUS_LABEL } from "./shared/taskLabels.js";
 
 const session = await requireAuth();
 if (!session) {
@@ -537,7 +538,7 @@ function makeLeafRow(type, typeLabel, project, item, number) {
     deliverable: item.target_deliverable,
     completionDate: isQueue ? item.planned_completion_date : isDeadline ? item.planned_date : item.due_date,
     actualDate: item.actual_completion_date ?? item.actual_date,
-    status: item.status,
+    status: SOURCE_STATUS_LABEL[item.status] ?? item.status,
     project,
     item,
   };
@@ -666,7 +667,7 @@ function buildDetailPanel(r, locked) {
             ? `<label>实际日期 <input type="date" class="d-actual" value="${t.actual_date ?? ""}" /></label>`
             : `<span>实际完成时间：${t.actual_completion_date ?? "(未完成)"}</span>`
         }
-        <span>状态：${t.status}</span>
+        <span>状态：${SOURCE_STATUS_LABEL[t.status] ?? t.status}</span>
         ${t.status !== terminateStatusFor(r.type) ? `<button type="button" class="secondary d-terminate">标记中止</button>` : ""}
         <button type="button" class="secondary d-delete">删除此任务</button>
       </div>
@@ -826,7 +827,7 @@ function buildDetailPanel(r, locked) {
       </div>
       <div class="inline-form" style="margin-top:6px;">
         <label>实际完成时间 <input type="date" class="d-actual" value="${inst.actual_completion_date ?? ""}" /></label>
-        <span>状态：${inst.status}</span>
+        <span>状态：${SOURCE_STATUS_LABEL[inst.status] ?? inst.status}</span>
         ${inst.status !== "stopped" ? `<button type="button" class="secondary d-terminate">标记中止</button>` : ""}
         <button type="button" class="secondary d-delete">删除此实例</button>
       </div>
