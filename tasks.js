@@ -243,6 +243,26 @@ function onLevel2Change(sel) {
 
 document.getElementById("wbs-level2-select").addEventListener("change", () => onLevel2Change(parseOwnerValue()));
 
+// "编号"输入框的默认值是页面/表单加载那一刻suggestNextTaskNumber()算出来的建议值，用户可以
+// 手动改（保留补历史数据时跳号的能力，见createTaskListLeaf/createRecurringNew的调用处）。
+// 但如果这段时间里这个号被别的插入抢注了（比如页面加载慢、这段时间又新建了别的项目），
+// 提交时就会撞task_number_registry的主键唯一约束——这是个check-then-act竞态，不是提交
+// 校验能防住的。2026-07-14用户反馈实测遇到过报错，这里改成撞了主键冲突就自动重新取一个
+// 建议值重试（最多5次），并把"编号"框同步更新成实际用上的号，而不是直接把原始报错甩给用户。
+async function claimTaskNumberSafe(params) {
+  let level1Number = params.level1_number;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      return await claimTaskNumber({ ...params, level1_number: level1Number });
+    } catch (err) {
+      const isConflict = /task_number_registry_pkey/.test(err.message || "") || err.code === "23505";
+      if (!isConflict || attempt === 4) throw err;
+      level1Number = await suggestNextTaskNumber();
+      document.getElementById("new-project-number").value = level1Number;
+    }
+  }
+}
+
 // 循环任务标题/最终交付物按当次生成的月/周动态拼出来——项目只存"动词前缀(title_verb)+
 // 名词部分(title_noun)"，比如"制作"+"周例会PPT"，每次生成实例时现算出"7月第4周"这种限定语
 // 插进去。monthly频率没有level3(月内不再细分)，限定语只用月份。交付物不带动词前缀。
@@ -338,7 +358,7 @@ async function createTaskListLeaf(sel) {
     const projTitle = document.getElementById("new-project-title").value.trim();
     if (!projTitle) throw new Error("请填写项目名");
     const level1Number = Number(document.getElementById("new-project-number").value);
-    const numberRow = await claimTaskNumber({
+    const numberRow = await claimTaskNumberSafe({
       task_type: sel.type,
       title_snapshot: projTitle,
       owning_table: "projects",
@@ -391,7 +411,7 @@ async function createRecurringNew() {
     throw new Error("名词部分(交付物)/模块/责任人/第一次的例会周都是必填项");
   }
   const title = titleVerb + titleNoun;
-  const numberRow = await claimTaskNumber({
+  const numberRow = await claimTaskNumberSafe({
     task_type: "recurring",
     title_snapshot: title,
     owning_table: "projects",
@@ -916,6 +936,15 @@ async function init() {
   const weekSelect = document.getElementById("recurring-first-week");
   weekSelect.innerHTML = weekOptionsHtml(null);
   document.getElementById("tasks-tbody").innerHTML = `<tr><td colspan="11">加载中...</td></tr>`;
+
+  // "新建任务"表单本身不依赖"全部任务"列表数据——归属下拉先用ownerOptionsHtml()在projects
+  // 还是空数组的状态下渲染(这时候只会出现"+新建XXX"这三个选项，没有已有项目可选，完全正确)，
+  // 让创建新项目这条路径立刻可用，不用等projects+lockMap这两个网络请求跑完。等真实项目列表
+  // 到达后，reloadAll()末尾会用真实数据重新渲染一次这个下拉(2026-07-14用户反馈修复——之前
+  // owner-select完全靠reloadAll()才有选项，新建表单在数据没读完前形同虚设，即使"新建"操作
+  // 本身根本不需要读现有任务)。
+  document.getElementById("owner-select").innerHTML = ownerOptionsHtml();
+  await onOwnerChange();
 
   const [modules, people, weeks] = await Promise.all([
     modulesCache.freshPromise,
