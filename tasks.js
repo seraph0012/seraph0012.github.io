@@ -5,6 +5,7 @@ import {
   listPeople,
   listMeetingWeeks,
   listProjects,
+  listProjectHeaders,
   createProject,
   createRecurringProject,
   updateProject,
@@ -186,6 +187,17 @@ function refreshLevel2Options(sel) {
     return;
   }
   const project = projects.find((p) => p.id === sel.id);
+  // project.tasks为null代表这个项目目前只有缓存的"轻量表头"数据(见init()的project_headers
+  // cache-first)、真实任务列表还没从listProjects()拉回来——不能当成"这个项目还没有任何任务"
+  // (那样会导致建议出错误的二级编号)，先显示加载中占位，等reloadAll()真正拉到数据后
+  // 会自动重新调这个函数(reloadAll()末尾会重新走一次onOwnerChange())。
+  if (project.tasks == null) {
+    level2Select.innerHTML = `<option value="__loading__">(该项目详情加载中，请稍候再选...)</option>`;
+    document.getElementById("wbs-level2-new-wrap").hidden = true;
+    document.getElementById("wbs-level2-title-wrap").hidden = true;
+    document.getElementById("wbs-level3").closest("label").hidden = true;
+    return;
+  }
   const children = project.tasks;
   const groups = [...new Set(children.filter((c) => c.wbs_level2_number != null).map((c) => c.wbs_level2_number))].sort(
     (a, b) => a - b
@@ -206,6 +218,7 @@ function refreshLevel2Options(sel) {
 function onLevel2Change(sel) {
   const level2Select = document.getElementById("wbs-level2-select");
   const val = level2Select.value;
+  if (val === "__loading__") return; // 加载占位选项，没有真实数据可算，等数据到达后会重新走一遍
   const isNewLevel2 = val === "__new__";
   const isNone = val === "__none__";
   const level3Input = document.getElementById("wbs-level3");
@@ -222,6 +235,7 @@ function onLevel2Change(sel) {
     return;
   }
   const project = projects.find((p) => p.id === sel.id);
+  if (project.tasks == null) return; // 同上，数据还没到
   const children = project.tasks;
   if (isNewLevel2) {
     const existingLevel2 = children.filter((c) => c.wbs_level2_number != null).map((c) => c.wbs_level2_number);
@@ -281,8 +295,15 @@ function generateInstanceDeliverable(titleVerb, titleNoun, frequency, targetWeek
 
 function refreshRecurringPreview(projectId) {
   const p = projects.find((x) => x.id === projectId);
-  const s = p.recurring_project_settings;
   const previewEl = document.getElementById("recurring-instance-preview");
+  // 同refreshLevel2Options：project_headers缓存没有tasks/recurring_project_settings，
+  // 数据没到位前不能瞎算，显示加载中，等reloadAll()拿到真实数据后会自动重新调这个函数
+  if (p.tasks == null || p.recurring_project_settings == null) {
+    previewEl.textContent = "该循环任务详情加载中，请稍候...";
+    previewEl.className = "status";
+    return;
+  }
+  const s = p.recurring_project_settings;
   const targetWeek = nextUnusedWeek(p.tasks);
   if (!targetWeek) {
     previewEl.textContent = "没有更多可用的例会周了，请先在例会日历里预生成更多周";
@@ -335,6 +356,9 @@ async function createTaskListLeaf(sel) {
   const moduleId = document.getElementById("leaf-module").value || null;
   const owner = document.getElementById("leaf-owner").value.trim();
   const level2Select = document.getElementById("wbs-level2-select");
+  if (level2Select.value === "__loading__") {
+    throw new Error("该项目详情还在加载，请稍等片刻再提交");
+  }
   const isNewLevel2Group = level2Select.value === "__new__";
   const level2Title = document.getElementById("wbs-level2-title").value.trim();
   let level2 = null;
@@ -443,6 +467,9 @@ async function createRecurringNew() {
 
 async function generateNextInstance(projectId) {
   const p = projects.find((x) => x.id === projectId);
+  if (p.tasks == null || p.recurring_project_settings == null) {
+    throw new Error("该循环任务详情还在加载，请稍等片刻再提交");
+  }
   const s = p.recurring_project_settings;
   const targetWeek = nextUnusedWeek(p.tasks);
   if (!targetWeek) throw new Error("没有更多可用的例会周了，请先在例会日历里预生成更多周");
@@ -923,14 +950,26 @@ async function reloadAll() {
 async function init() {
   // modules/people/meeting_weeks是这个页面的"配套数据"(新建任务表单要用)，不是主数据，
   // 用cache-first减少等待感；有缓存就先同步赋值，跟下面projects的fresh请求一起并发跑。
+  // project_headers(一级项目的id/编号/标题/类型，不含嵌套任务)同理——项目本身一年最多
+  // 几十个、改动很低频，跟modules/people是同一类适合缓存的小表(2026-07-14用户建议)，
+  // 用来让"归属"下拉能立刻显示真实项目名而不是空等listProjects()那个带嵌套任务的重查询。
+  // 缓存条目里tasks/task_groups/recurring_project_settings显式设成null(不是[])作为
+  // "还没真正加载"的标记——如果当成空数组，级联编号/循环任务候选周这些逻辑会误以为
+  // 这个项目真的还没有任何任务，算出错误的建议编号；下面的refreshLevel2Options()/
+  // refreshRecurringPreview()/generateNextInstance()都专门检查了这个null标记，
+  // 命中时显示"加载中"而不是瞎算，等listProjects()真正返回后(reloadAll()内)会自动刷新。
   const modulesCache = cacheFirst("modules", listModules);
   const peopleCache = cacheFirst("people", listPeople);
   const weeksCache = cacheFirst("meeting_weeks", listMeetingWeeks);
+  const projectHeadersCache = cacheFirst("project_headers", listProjectHeaders);
   if (modulesCache.cached) allModules = modulesCache.cached;
   if (peopleCache.cached) allPeople = peopleCache.cached;
   if (weeksCache.cached) {
     allWeeksRaw = weeksCache.cached;
     allWeeks = allWeeksRaw.filter((w) => w.is_normal !== false);
+  }
+  if (projectHeadersCache.cached) {
+    projects = projectHeadersCache.cached.map((p) => ({ ...p, tasks: null, task_groups: null, recurring_project_settings: null }));
   }
 
   const weekSelect = document.getElementById("recurring-first-week");
@@ -938,11 +977,10 @@ async function init() {
   document.getElementById("tasks-tbody").innerHTML = `<tr><td colspan="11">加载中...</td></tr>`;
 
   // "新建任务"表单本身不依赖"全部任务"列表数据——归属下拉先用ownerOptionsHtml()在projects
-  // 还是空数组的状态下渲染(这时候只会出现"+新建XXX"这三个选项，没有已有项目可选，完全正确)，
-  // 让创建新项目这条路径立刻可用，不用等projects+lockMap这两个网络请求跑完。等真实项目列表
-  // 到达后，reloadAll()末尾会用真实数据重新渲染一次这个下拉(2026-07-14用户反馈修复——之前
-  // owner-select完全靠reloadAll()才有选项，新建表单在数据没读完前形同虚设，即使"新建"操作
-  // 本身根本不需要读现有任务)。
+  // 还是空数组/缓存表头的状态下渲染，让创建新项目这条路径立刻可用，不用等projects+lockMap
+  // 这两个网络请求跑完。等真实项目列表到达后，reloadAll()末尾会用真实数据重新渲染一次这个
+  // 下拉(2026-07-14用户反馈修复——之前owner-select完全靠reloadAll()才有选项，新建表单在
+  // 数据没读完前形同虚设，即使"新建"操作本身根本不需要读现有任务)。
   document.getElementById("owner-select").innerHTML = ownerOptionsHtml();
   await onOwnerChange();
 
@@ -950,6 +988,9 @@ async function init() {
     modulesCache.freshPromise,
     peopleCache.freshPromise,
     weeksCache.freshPromise,
+    projectHeadersCache.freshPromise, // 只用来刷新缓存本身供下次打开页面用；真正驱动UI的
+    // 是reloadAll()里listProjects()带回来的完整数据，这里不把结果写回projects，避免跟
+    // reloadAll()的写入互相覆盖(listProjects()先/后到达都不该被这个轻量查询的结果打回原形)
     reloadAll(),
   ]);
   allModules = modules;

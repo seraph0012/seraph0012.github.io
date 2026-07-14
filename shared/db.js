@@ -83,6 +83,13 @@ export const listProjects = () =>
     .select("*, tasks(*), task_groups(*), recurring_project_settings(*)")
     .order("level1_number")
     .then(unwrap);
+// 轻量版：不带嵌套tasks/task_groups/recurring_project_settings，只查projects表自己的列。
+// 一级任务(项目)一年最多几十个、改动很低频，跟modules/people属于同一类适合cache-first的
+// 小表(2026-07-14用户建议)——供tasks.js"归属"下拉在listProjects()完整数据还没到达前就能
+// 立刻显示真实项目名称/编号。留意：这个查询不含tasks，不能用来做级联编号/候选池这类需要
+// 任务级数据的逻辑，那些必须等listProjects()。
+export const listProjectHeaders = () =>
+  supabase.from("projects").select("id, level1_number, title, project_type, status").order("level1_number").then(unwrap);
 export const getProject = (id) =>
   supabase
     .from("projects")
