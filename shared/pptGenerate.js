@@ -3,7 +3,7 @@
 // tools/.claude/plans/plan-weekly-report-unified-workflow.md）。
 import JSZip from "https://esm.sh/jszip@3";
 import { listWeeklyTaskEntries } from "./db.js";
-import { sourceIdOf, buildSourceDetailMap } from "./taskLabels.js";
+import { buildSourceDetailMap } from "./taskLabels.js";
 import { weekdayLabel, monthDayLabel } from "./dateUtils.js";
 import {
   parseXml,
@@ -70,12 +70,12 @@ function sortKey(e, detail, moduleNameById) {
 
 function buildPlanLikeRows(entries, detailMap, moduleNameById) {
   const sorted = [...entries].sort((a, b) =>
-    sortKey(a, detailMap.get(`${a.source_type}:${sourceIdOf(a)}`) || {}, moduleNameById).localeCompare(
-      sortKey(b, detailMap.get(`${b.source_type}:${sourceIdOf(b)}`) || {}, moduleNameById)
+    sortKey(a, detailMap.get(a.task_id) || {}, moduleNameById).localeCompare(
+      sortKey(b, detailMap.get(b.task_id) || {}, moduleNameById)
     )
   );
   const rows = sorted.map((e) => {
-    const detail = detailMap.get(`${e.source_type}:${sourceIdOf(e)}`) || {};
+    const detail = detailMap.get(e.task_id) || {};
     return [
       moduleNameById.get(e.module_id) || "",
       e.plan_category || "",
@@ -107,12 +107,12 @@ function buildPlanLikeRows(entries, detailMap, moduleNameById) {
 
 function buildSummaryRows(entries, detailMap, moduleNameById) {
   const sorted = [...entries].sort((a, b) =>
-    sortKey(a, detailMap.get(`${a.source_type}:${sourceIdOf(a)}`) || {}, moduleNameById).localeCompare(
-      sortKey(b, detailMap.get(`${b.source_type}:${sourceIdOf(b)}`) || {}, moduleNameById)
+    sortKey(a, detailMap.get(a.task_id) || {}, moduleNameById).localeCompare(
+      sortKey(b, detailMap.get(b.task_id) || {}, moduleNameById)
     )
   );
   const rows = sorted.map((e) => {
-    const detail = detailMap.get(`${e.source_type}:${sourceIdOf(e)}`) || {};
+    const detail = detailMap.get(e.task_id) || {};
     return [
       moduleNameById.get(e.module_id) || "",
       e.summary_category || "",
@@ -163,11 +163,8 @@ export async function generatePptForWeek(targetWeek, previousWeek, allModules) {
     listWeeklyTaskEntries(targetWeek.id, "stopped"),
   ]);
 
-  const detailItems = [...planEntries, ...summaryEntries, ...stoppedEntries].map((e) => ({
-    source_type: e.source_type,
-    source_id: sourceIdOf(e),
-  }));
-  const detailMap = await buildSourceDetailMap(detailItems);
+  const taskIds = [...planEntries, ...summaryEntries, ...stoppedEntries].map((e) => e.task_id);
+  const detailMap = await buildSourceDetailMap(taskIds);
 
   const planRows = buildPlanLikeRows(planEntries, detailMap, moduleNameById);
   const summaryRows = buildSummaryRows(summaryEntries, detailMap, moduleNameById);

@@ -70,140 +70,72 @@ export const setTaskNumberOwner = (level1Number, owningId) =>
     .then(unwrap);
 // 2026-07-10用户明确要求：删除整个项目/模板时编号要真正释放、可以复用，不是"永久占用"。
 // 硬删除registry行(而不是只标记retired_at)——调用方必须先删掉引用这个level1_number的
-// 项目/模板行(queue_projects/deadline_projects/recurring_task_templates的level1_number
-// 列是FK，项目行还在的话这里会被约束挡住，顺序不能反)。
+// 项目行(projects.level1_number 列是FK，项目行还在的话这里会被约束挡住，顺序不能反)。
 export const deleteTaskNumber = (level1Number) =>
   supabase.from("task_number_registry").delete().eq("level1_number", level1Number).then(unwrap);
 
-// ---- queue_projects (类型A) ----
-export const listQueueProjects = () =>
+// ---- projects (2026-07-14统一重构：替代queue_projects/deadline_projects/
+// recurring_task_templates三张几乎同构的项目表，project_type='sequential'|'nonsequential'|
+// 'recurring'区分行为，recurring类型的专属信息在recurring_project_settings侧表) ----
+export const listProjects = () =>
   supabase
-    .from("queue_projects")
-    .select("*, queue_project_tasks!queue_project_tasks_project_id_fkey(*), queue_project_task_groups(*)")
+    .from("projects")
+    .select("*, tasks(*), task_groups(*), recurring_project_settings(*)")
     .order("level1_number")
     .then(unwrap);
-export const getQueueProject = (id) =>
+export const getProject = (id) =>
   supabase
-    .from("queue_projects")
-    .select("*, queue_project_tasks!queue_project_tasks_project_id_fkey(*), queue_project_task_groups(*)")
+    .from("projects")
+    .select("*, tasks(*), task_groups(*), recurring_project_settings(*)")
     .eq("id", id)
     .single()
     .then(unwrap);
-export const createQueueProject = (row) =>
-  supabase.from("queue_projects").insert(row).select().single().then(unwrap);
-export const updateQueueProject = (id, patch) =>
+export const createProject = (row) =>
+  supabase.from("projects").insert(row).select().single().then(unwrap);
+// recurring类型项目创建时连带插入recurring_project_settings一行(1:1侧表)
+export const createRecurringProject = async (row, settings) => {
+  const project = await createProject(row);
+  await supabase.from("recurring_project_settings").insert({ project_id: project.id, ...settings }).then(unwrap);
+  return project;
+};
+export const updateProject = (id, patch) =>
   supabase
-    .from("queue_projects")
+    .from("projects")
     .update({ ...patch, updated_at: new Date().toISOString() })
     .eq("id", id)
     .select()
     .single()
     .then(unwrap);
-export const deleteQueueProject = (id) =>
-  supabase.from("queue_projects").delete().eq("id", id).then(unwrap);
-export const addQueueProjectTask = (projectId, task) =>
+export const updateRecurringSettings = (projectId, patch) =>
+  supabase.from("recurring_project_settings").update(patch).eq("project_id", projectId).select().single().then(unwrap);
+export const deleteProject = (id) =>
+  supabase.from("projects").delete().eq("id", id).then(unwrap);
+
+// ---- tasks (替代queue_project_tasks/deadline_milestones/recurring_task_instances) ----
+export const addTask = (projectId, task) =>
   supabase
-    .from("queue_project_tasks")
+    .from("tasks")
     .insert({ project_id: projectId, ...task })
     .select()
     .single()
     .then(unwrap);
-export const updateQueueProjectTask = (id, patch) =>
-  supabase.from("queue_project_tasks").update(patch).eq("id", id).select().single().then(unwrap);
-export const deleteQueueProjectTask = (id) =>
-  supabase.from("queue_project_tasks").delete().eq("id", id).then(unwrap);
+export const updateTask = (id, patch) =>
+  supabase.from("tasks").update(patch).eq("id", id).select().single().then(unwrap);
+export const deleteTask = (id) =>
+  supabase.from("tasks").delete().eq("id", id).then(unwrap);
 // 二级任务标题——只有"这个二级下还有三级子任务"时才需要(二级本身不再单独成一行，没地方
 // 存自己的title)，2026-07-10用户明确要求有1/2/3级的任务每一级都要有标题
-export const upsertQueueTaskGroup = (projectId, level2Number, title) =>
+export const upsertTaskGroup = (projectId, level2Number, title) =>
   supabase
-    .from("queue_project_task_groups")
+    .from("task_groups")
     .upsert({ project_id: projectId, wbs_level2_number: level2Number, title }, { onConflict: "project_id,wbs_level2_number" })
     .select()
     .single()
     .then(unwrap);
-
-// ---- deadline_projects (类型B) ----
-export const listDeadlineProjects = () =>
-  supabase
-    .from("deadline_projects")
-    .select("*, deadline_milestones(*), deadline_milestone_groups(*)")
-    .order("deadline_date")
-    .then(unwrap);
-export const getDeadlineProject = (id) =>
-  supabase
-    .from("deadline_projects")
-    .select("*, deadline_milestones(*), deadline_milestone_groups(*)")
-    .eq("id", id)
-    .single()
-    .then(unwrap);
-export const createDeadlineProject = (row) =>
-  supabase.from("deadline_projects").insert(row).select().single().then(unwrap);
-export const updateDeadlineProject = (id, patch) =>
-  supabase
-    .from("deadline_projects")
-    .update({ ...patch, updated_at: new Date().toISOString() })
-    .eq("id", id)
-    .select()
-    .single()
-    .then(unwrap);
-export const deleteDeadlineProject = (id) =>
-  supabase.from("deadline_projects").delete().eq("id", id).then(unwrap);
-export const addMilestone = (projectId, milestone) =>
-  supabase
-    .from("deadline_milestones")
-    .insert({ project_id: projectId, ...milestone })
-    .select()
-    .single()
-    .then(unwrap);
-export const updateMilestone = (id, patch) =>
-  supabase.from("deadline_milestones").update(patch).eq("id", id).select().single().then(unwrap);
-export const deleteMilestone = (id) =>
-  supabase.from("deadline_milestones").delete().eq("id", id).then(unwrap);
-export const upsertMilestoneGroup = (projectId, level2Number, title) =>
-  supabase
-    .from("deadline_milestone_groups")
-    .upsert({ project_id: projectId, wbs_level2_number: level2Number, title }, { onConflict: "project_id,wbs_level2_number" })
-    .select()
-    .single()
-    .then(unwrap);
-
-// ---- recurring_task_templates / instances (类型C) ----
-export const listRecurringTemplates = () =>
-  supabase
-    .from("recurring_task_templates")
-    .select("*, recurring_task_instances(*)")
-    .order("level1_number")
-    .then(unwrap);
-export const getRecurringTemplate = (id) =>
-  supabase
-    .from("recurring_task_templates")
-    .select("*, recurring_task_instances(*)")
-    .eq("id", id)
-    .single()
-    .then(unwrap);
-export const createRecurringTemplate = (row) =>
-  supabase.from("recurring_task_templates").insert(row).select().single().then(unwrap);
-export const updateRecurringTemplate = (id, patch) =>
-  supabase
-    .from("recurring_task_templates")
-    .update({ ...patch, updated_at: new Date().toISOString() })
-    .eq("id", id)
-    .select()
-    .single()
-    .then(unwrap);
-export const deleteRecurringTemplate = (id) =>
-  supabase.from("recurring_task_templates").delete().eq("id", id).then(unwrap);
-export const addRecurringInstance = (templateId, instance) =>
-  supabase
-    .from("recurring_task_instances")
-    .insert({ template_id: templateId, ...instance })
-    .select()
-    .single()
-    .then(unwrap);
-export const updateRecurringInstance = (id, patch) =>
-  supabase.from("recurring_task_instances").update(patch).eq("id", id).select().single().then(unwrap);
-export const deleteRecurringInstance = (id) =>
-  supabase.from("recurring_task_instances").delete().eq("id", id).then(unwrap);
+// 循环任务"这周该生成/显示哪个实例"——task_list类型的任务meeting_week_id恒为null，
+// 这个查询天然只会命中recurring类型的任务
+export const listTasksForWeek = (weekId) =>
+  supabase.from("tasks").select("*, projects(*, recurring_project_settings(*))").eq("meeting_week_id", weekId).then(unwrap);
 
 // ---- weekly_task_entries ----
 export const listWeeklyTaskEntries = (meetingWeekId, appearsIn) =>
@@ -226,73 +158,40 @@ export const updateWeeklyTaskEntry = (id, patch) =>
     .then(unwrap);
 export const deleteWeeklyTaskEntry = (id) =>
   supabase.from("weekly_task_entries").delete().eq("id", id).then(unwrap);
-// weekly_task_entries的source_*_id外键没有加ON DELETE CASCADE（历史周记录不该被源任务删除
-// 静默带走），所以删除一个源任务(queue_task/milestone/recurring_instance)前，
-// 如果还有weekly_task_entries引用着它，数据库会用FK约束挡住删除。这个函数供"确实要删掉这个
-// 任务连带清掉引用它的计划/总结条目"的场景使用（调用前应先让用户确认，因为这些条目可能是
-// 已经生成过PPT的历史记录）。
-export const deleteWeeklyTaskEntriesForSource = (sourceColumn, sourceId) =>
-  supabase.from("weekly_task_entries").delete().eq(sourceColumn, sourceId).then(unwrap);
-export const countWeeklyTaskEntriesForSource = (sourceColumn, sourceId) =>
+// weekly_task_entries.task_id没有加ON DELETE CASCADE（历史周记录不该被源任务删除静默带走），
+// 所以删除一个任务前，如果还有weekly_task_entries引用着它，数据库会用FK约束挡住删除。
+// 这个函数供"确实要删掉这个任务连带清掉引用它的计划/总结条目"的场景使用（调用前应先让用户
+// 确认，因为这些条目可能是已经生成过PPT的历史记录）。
+export const deleteWeeklyTaskEntriesForTask = (taskId) =>
+  supabase.from("weekly_task_entries").delete().eq("task_id", taskId).then(unwrap);
+export const countWeeklyTaskEntriesForTask = (taskId) =>
   supabase
     .from("weekly_task_entries")
     .select("id", { count: "exact", head: true })
-    .eq(sourceColumn, sourceId)
+    .eq("task_id", taskId)
     .then(({ count, error }) => {
       if (error) throw error;
       return count ?? 0;
     });
 // "最终计划完成时间"锁定判断：一旦这个任务被写进过任意一周的计划(appears_in='plan')，
 // 这个日期就要锁定，改动必须走订正说明——即使那一周已经过去/已经解锁编辑过其他字段，
-// 这个锁定也不解除(判断的是"有没有进入过计划"，不是"当前是否在锁定的周里")。
-// 批量版本(2026-07-10性能修复)：原来tasks.js对每个可能锁定的任务单独发一次count请求
-// (N个任务=N次HTTP往返)，render一次表格(哪怕只是纯本地的展开详情，不涉及任何数据变化)
-// 都要重新打一遍，是页面"点什么都卡"的主因。改成两次bulk查询(source_queue_task_id一次、
-// source_milestone_id一次)取出"曾经进入过plan"的全部source_id集合，前端用Set.has()判断。
-export const listPlannedSourceIds = (sourceColumn) =>
+// 这个锁定也不解除(判断的是"有没有进入过计划"，不是"当前是否在锁定的周里")。2026-07-14
+// 统一任务模型后weekly_task_entries只有一个task_id外键，锁定查询从"两次bulk查询各自的
+// source_queue_task_id/source_milestone_id"收缩成一次查询。
+export const listPlannedTaskIds = () =>
   supabase
     .from("weekly_task_entries")
-    .select(sourceColumn)
+    .select("task_id")
     .eq("appears_in", "plan")
-    .not(sourceColumn, "is", null)
     .then(unwrap)
-    .then((rows) => new Set(rows.map((r) => r[sourceColumn])));
+    .then((rows) => new Set(rows.map((r) => r.task_id)));
 
-export const listRecurringInstancesForWeek = (weekId) =>
-  supabase
-    .from("recurring_task_instances")
-    .select("*, recurring_task_templates(*)")
-    .eq("meeting_week_id", weekId)
-    .then(unwrap);
-
-// ---- 按id批量反查任务标题，供weekly-plan/weekly-summary渲染候选池和已保存条目的任务名 ----
-export const listQueueProjectTasksByIds = (ids) =>
+// ---- 按id批量反查任务标题，供weekly-report渲染候选池和已保存条目的任务名 ----
+export const listTasksByIds = (ids) =>
   ids.length === 0
     ? Promise.resolve([])
     : supabase
-        .from("queue_project_tasks")
-        .select(
-          "id, project_id, title, wbs_level2_number, wbs_level3_number, target_deliverable, planned_completion_date, actual_completion_date, completion_date_amendment_note, status, queue_projects!queue_project_tasks_project_id_fkey(title, level1_number)"
-        )
-        .in("id", ids)
-        .then(unwrap);
-export const listMilestonesByIds = (ids) =>
-  ids.length === 0
-    ? Promise.resolve([])
-    : supabase
-        .from("deadline_milestones")
-        .select(
-          "id, project_id, title, wbs_level2_number, wbs_level3_number, target_deliverable, planned_date, planned_date_amendment_note, actual_date, status, deadline_projects(title, level1_number)"
-        )
-        .in("id", ids)
-        .then(unwrap);
-export const listRecurringInstancesByIds = (ids) =>
-  ids.length === 0
-    ? Promise.resolve([])
-    : supabase
-        .from("recurring_task_instances")
-        .select(
-          "id, template_id, full_number, level2_number, level3_number, due_date, status, title, target_deliverable, recurring_task_templates(title, level1_number, module_id, owner)"
-        )
+        .from("tasks")
+        .select("*, projects(title, level1_number, project_type, recurring_project_settings(title_verb, title_noun))")
         .in("id", ids)
         .then(unwrap);

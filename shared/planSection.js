@@ -1,22 +1,20 @@
 // 从weekly-plan.js抽取出来的"计划区块"挂载函数，供weekly-report.js复用。
 // 内部一律用 root.querySelector('.xxx')（class，不用id）操作DOM，参见summarySection.js顶部注释。
 import {
-  listQueueProjects,
-  listDeadlineProjects,
-  listRecurringInstancesForWeek,
+  listProjects,
   listWeeklyTaskEntries,
   createWeeklyTaskEntry,
   updateWeeklyTaskEntry,
   deleteWeeklyTaskEntry,
   updateMeetingWeekFields,
+  updateTask,
 } from "./db.js";
 import {
-  SOURCE_LABEL,
-  sourceIdOf,
-  sourceColumnFor,
+  PROJECT_TYPE_LABEL,
   buildLabelMap,
   buildSourceDetailMap,
   listAllActiveCandidates,
+  taskCandidateFields,
 } from "./taskLabels.js";
 import { dateWithWeekday } from "./dateUtils.js";
 import { validateSourceDetail, validateOwnFields } from "./entryValidation.js";
@@ -128,12 +126,12 @@ export function mountPlanSection(root, { allModules, allPeople }) {
   let candidates = [];
   let manualCandidates = [];
 
-  function currentQueueTask(project) {
-    const sorted = [...project.queue_project_tasks].sort((a, b) => {
+  function currentSequentialTask(project) {
+    const sorted = [...project.tasks].sort((a, b) => {
       if (a.wbs_level2_number !== b.wbs_level2_number) return a.wbs_level2_number - b.wbs_level2_number;
       return (a.wbs_level3_number ?? 0) - (b.wbs_level3_number ?? 0);
     });
-    return sorted.find((t) => t.status !== "done" && t.status !== "skipped");
+    return sorted.find((t) => t.status !== "done" && t.status !== "stopped");
   }
 
   async function computeCarryOverSet(prevWeek) {
@@ -142,73 +140,56 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     const set = new Set();
     for (const e of prevSummary) {
       if (e.status === "未完成") {
-        set.add(`${e.source_type}:${sourceIdOf(e)}`);
+        set.add(e.task_id);
       }
     }
     return set;
   }
 
-  async function generateCandidatePool(w) {
-    const [queueProjects, deadlineProjects, recurringInstances, existingPlan] = await Promise.all([
-      listQueueProjects(),
-      listDeadlineProjects(),
-      listRecurringInstancesForWeek(w.id),
-      listWeeklyTaskEntries(w.id, "plan"),
-    ]);
+  // 若该任务从未进入过任何一周的计划(actual_start_date还没记录过)，这是它第一次被排进
+  // 计划，把这一周的开始日期记成"实际开始日期"(2026-07-14用户要求：自动记录，不用手动填)。
+  async function maybeSetActualStart(taskId, actualStartDate, weekStartDate) {
+    if (!actualStartDate) {
+      await updateTask(taskId, { actual_start_date: weekStartDate });
+    }
+  }
 
-    const alreadyPlanned = new Set(existingPlan.map((e) => `${e.source_type}:${sourceIdOf(e)}`));
+  async function generateCandidatePool(w) {
+    const [projects, existingPlan] = await Promise.all([listProjects(), listWeeklyTaskEntries(w.id, "plan")]);
+
+    const alreadyPlanned = new Set(existingPlan.map((e) => e.task_id));
     const carryOver = await computeCarryOverSet(previousWeek);
 
     const raw = [];
-
-    for (const p of queueProjects) {
-      if (p.status !== "active") continue;
-      const task = currentQueueTask(p);
-      if (!task) continue;
-      raw.push({
-        source_type: "queue_task",
-        source_id: task.id,
-        module_id: task.module_id,
-        owner: task.owner,
-        deliverable_this_week: task.target_deliverable || "",
-        execution_deadline: null,
-      });
-    }
-
     const weekEnd = new Date(w.natural_week_end);
-    for (const p of deadlineProjects) {
-      if (p.status !== "active") continue;
-      for (const m of p.deadline_milestones) {
-        if (m.status === "done" || m.status === "stopped") continue;
-        if (new Date(m.planned_date) > weekEnd) continue;
-        raw.push({
-          source_type: "milestone",
-          source_id: m.id,
-          module_id: m.module_id,
-          owner: m.owner,
-          deliverable_this_week: m.target_deliverable || "",
-          execution_deadline: m.planned_date,
-        });
+
+    for (const p of projects) {
+      if (p.project_type === "sequential") {
+        if (p.status !== "active") continue;
+        const task = currentSequentialTask(p);
+        if (!task) continue;
+        raw.push(taskCandidateFields(p, task));
+      } else if (p.project_type === "nonsequential") {
+        if (p.status !== "active") continue;
+        for (const t of p.tasks) {
+          if (t.status === "done" || t.status === "stopped") continue;
+          if (t.planned_completion_date && new Date(t.planned_completion_date) > weekEnd) continue;
+          raw.push(taskCandidateFields(p, t));
+        }
+      } else {
+        for (const t of p.tasks) {
+          if (t.meeting_week_id !== w.id) continue;
+          raw.push(taskCandidateFields(p, t));
+        }
       }
     }
 
-    for (const inst of recurringInstances) {
-      raw.push({
-        source_type: "recurring_instance",
-        source_id: inst.id,
-        module_id: inst.recurring_task_templates.module_id,
-        owner: inst.recurring_task_templates.owner,
-        deliverable_this_week: inst.target_deliverable || "",
-        execution_deadline: inst.due_date,
-      });
-    }
-
-    const filtered = raw.filter((c) => !alreadyPlanned.has(`${c.source_type}:${c.source_id}`));
-    const detailMap = await buildSourceDetailMap(filtered);
+    const filtered = raw.filter((c) => !alreadyPlanned.has(c.task_id));
+    const detailMap = await buildSourceDetailMap(filtered.map((c) => c.task_id));
     const soleModuleId = allModules.length === 1 ? allModules[0].id : null;
     for (const c of filtered) {
-      c.detail = detailMap.get(`${c.source_type}:${c.source_id}`) || {};
-      c.plan_category = carryOver.has(`${c.source_type}:${c.source_id}`) ? "上周未完成" : "本周新增";
+      c.detail = detailMap.get(c.task_id) || {};
+      c.plan_category = carryOver.has(c.task_id) ? "上周未完成" : "本周新增";
       if (c.module_id == null && soleModuleId != null) c.module_id = soleModuleId;
     }
     return filtered;
@@ -249,12 +230,12 @@ export function mountPlanSection(root, { allModules, allPeople }) {
 
   async function validatePlanBeforeLock() {
     const entries = await listWeeklyTaskEntries(week.id, "plan");
-    const labelItems = entries.map((e) => ({ source_type: e.source_type, source_id: sourceIdOf(e) }));
-    const [labelMap, detailMap] = await Promise.all([buildLabelMap(labelItems), buildSourceDetailMap(labelItems)]);
+    const taskIds = entries.map((e) => e.task_id);
+    const [labelMap, detailMap] = await Promise.all([buildLabelMap(taskIds), buildSourceDetailMap(taskIds)]);
     const problems = [];
     for (const e of entries) {
-      const label = labelMap.get(`${e.source_type}:${sourceIdOf(e)}`) || "(未知任务)";
-      const detail = detailMap.get(`${e.source_type}:${sourceIdOf(e)}`);
+      const label = labelMap.get(e.task_id) || "(未知任务)";
+      const detail = detailMap.get(e.task_id);
       const errs = [...validateOwnFields(e, PLAN_REQUIRED_FIELDS), ...validateSourceDetail(e, detail)];
       if (errs.length > 0) problems.push(`${label}：${errs.join("；")}`);
     }
@@ -319,7 +300,7 @@ export function mountPlanSection(root, { allModules, allPeople }) {
       const tr = document.createElement("tr");
       tr.innerHTML = `
         <td><input type="checkbox" class="f-check" checked /></td>
-        <td>${SOURCE_LABEL[c.source_type]}</td>
+        <td>${PROJECT_TYPE_LABEL[c.project_type]}</td>
         <td class="task-col">${c.detail.level1Text || ""}</td>
         <td class="task-col">${c.detail.level2Text || ""}</td>
         <td class="task-col">${c.detail.level3Text || ""}</td>
@@ -372,18 +353,20 @@ export function mountPlanSection(root, { allModules, allPeople }) {
       if (!tr.querySelector(".f-check").checked) continue;
       const c = candidates[Number(tr.dataset.idx)];
       toInsert.push({
-        meeting_week_id: week.id,
-        appears_in: "plan",
-        source_type: c.source_type,
-        [sourceColumnFor(c.source_type)]: c.source_id,
-        module_id: tr.querySelector(".f-module").value || null,
-        plan_category: c.plan_category,
-        owner: c.owner || (allPeople.length === 1 ? allPeople[0].name : null),
-        deliverable_this_week: tr.querySelector(".f-deliverable").value || null,
-        planned_hours: tr.querySelector(".f-hours").value || null,
-        priority_quadrant: tr.querySelector(".f-priority").value || null,
-        execution_deadline: c.execution_deadline || null,
-        resources_needed: "无",
+        c,
+        row: {
+          meeting_week_id: week.id,
+          appears_in: "plan",
+          task_id: c.task_id,
+          module_id: tr.querySelector(".f-module").value || null,
+          plan_category: c.plan_category,
+          owner: c.owner || (allPeople.length === 1 ? allPeople[0].name : null),
+          deliverable_this_week: tr.querySelector(".f-deliverable").value || null,
+          planned_hours: tr.querySelector(".f-hours").value || null,
+          priority_quadrant: tr.querySelector(".f-priority").value || null,
+          execution_deadline: c.execution_deadline || null,
+          resources_needed: "无",
+        },
       });
     }
     if (toInsert.length === 0) {
@@ -394,8 +377,9 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     resultEl.textContent = "写入中...";
     resultEl.className = "add-result status";
     try {
-      for (const row of toInsert) {
+      for (const { c, row } of toInsert) {
         await createWeeklyTaskEntry(row);
+        await maybeSetActualStart(c.task_id, c.actualStartDate, week.meeting_date);
       }
       resultEl.textContent = `已加入 ${toInsert.length} 条`;
       resultEl.className = "add-result status ok";
@@ -422,8 +406,8 @@ export function mountPlanSection(root, { allModules, allPeople }) {
       listAllActiveCandidates(week.id),
       listWeeklyTaskEntries(week.id, "plan"),
     ]);
-    const excluded = new Set(planEntries.map((e) => `${e.source_type}:${sourceIdOf(e)}`));
-    manualCandidates = all.filter((c) => !excluded.has(`${c.source_type}:${c.source_id}`));
+    const excluded = new Set(planEntries.map((e) => e.task_id));
+    manualCandidates = all.filter((c) => !excluded.has(c.task_id));
     renderManualPicker();
   }
 
@@ -442,15 +426,15 @@ export function mountPlanSection(root, { allModules, allPeople }) {
       await createWeeklyTaskEntry({
         meeting_week_id: week.id,
         appears_in: "plan",
-        source_type: c.source_type,
-        [sourceColumnFor(c.source_type)]: c.source_id,
+        task_id: c.task_id,
         module_id: c.module_id ?? soleModuleId,
-        plan_category: carryOver.has(`${c.source_type}:${c.source_id}`) ? "上周未完成" : "本周新增",
+        plan_category: carryOver.has(c.task_id) ? "上周未完成" : "本周新增",
         owner: c.owner || (allPeople.length === 1 ? allPeople[0].name : null),
         deliverable_this_week: c.deliverable_this_week,
         execution_deadline: c.execution_deadline || null,
         resources_needed: "无",
       });
+      await maybeSetActualStart(c.task_id, c.actualStartDate, week.meeting_date);
       resultEl.textContent = `已添加：${c.label}（可以在下方表格里继续编辑用时/优先级等字段）`;
       resultEl.className = "manual-add-result status ok";
       await loadManualCandidates();
@@ -467,15 +451,14 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     if (!week) return;
     root.querySelector(".plan-tbody").innerHTML = `<tr><td colspan="17">加载中...</td></tr>`;
     const entries = await listWeeklyTaskEntries(week.id, "plan");
-    const labelItems = entries.map((e) => ({ source_type: e.source_type, source_id: sourceIdOf(e) }));
-    const detailMap = await buildSourceDetailMap(labelItems);
+    const detailMap = await buildSourceDetailMap(entries.map((e) => e.task_id));
 
     const tbody = root.querySelector(".plan-tbody");
     tbody.innerHTML = "";
     const locked = isPlanLocked();
     const dis = locked ? "disabled" : "";
     for (const e of entries) {
-      const detail = detailMap.get(`${e.source_type}:${sourceIdOf(e)}`) || {};
+      const detail = detailMap.get(e.task_id) || {};
       const tr = document.createElement("tr");
       tr.innerHTML = `
         <td class="task-col readonly-col">${detail.level1Text || ""}</td>

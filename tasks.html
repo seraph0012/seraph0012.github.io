@@ -22,9 +22,12 @@
         <label>编号 <input type="number" id="new-project-number" min="1" style="width:5em" /></label>
         <span id="new-project-title-wrap">
           <input type="text" id="new-project-title" placeholder="项目/任务标题" style="min-width:200px" />
-          <input type="text" id="new-project-category" placeholder="分类(可选，仅顺序队列)" />
         </span>
-        <label id="new-project-deadline-wrap" hidden>项目截止日期 <input type="date" id="new-project-deadline" /></label>
+        <span id="new-project-extra-wrap">
+          <input type="text" id="new-project-category" placeholder="分类(可选)" />
+          <label>项目截止日期(可选) <input type="date" id="new-project-deadline" /></label>
+          <input type="text" id="new-project-deliverable" placeholder="项目最终交付物(可选)" />
+        </span>
       </span>
 
       <span id="leaf-fields" hidden>
@@ -36,6 +39,7 @@
         <label>模块 <select id="leaf-module"></select></label>
         <label>责任人 <select id="leaf-owner"></select></label>
         <input type="text" id="leaf-deliverable" placeholder="最终目标交付物(必填)" style="min-width:200px" />
+        <label>预计开始日期(可选) <input type="date" id="leaf-start-date" /></label>
         <label>最终计划完成时间 <input type="date" id="leaf-completion-date" /></label>
       </span>
 

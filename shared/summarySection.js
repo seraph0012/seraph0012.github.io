@@ -10,11 +10,9 @@ import {
   updateMeetingWeekFields,
 } from "./db.js";
 import {
-  sourceIdOf,
-  sourceColumnFor,
   buildLabelMap,
   buildSourceDetailMap,
-  syncSourceStatus,
+  syncTaskStatus,
   listAllActiveCandidates,
 } from "./taskLabels.js";
 import { validateSourceDetail, validateOwnFields } from "./entryValidation.js";
@@ -155,12 +153,12 @@ export function mountSummarySection(root, { allModules }) {
 
   async function validateSummaryBeforeLock() {
     const entries = await listWeeklyTaskEntries(week.id, "summary");
-    const labelItems = entries.map((e) => ({ source_type: e.source_type, source_id: sourceIdOf(e) }));
-    const [labelMap, detailMap] = await Promise.all([buildLabelMap(labelItems), buildSourceDetailMap(labelItems)]);
+    const taskIds = entries.map((e) => e.task_id);
+    const [labelMap, detailMap] = await Promise.all([buildLabelMap(taskIds), buildSourceDetailMap(taskIds)]);
     const problems = [];
     for (const e of entries) {
-      const label = labelMap.get(`${e.source_type}:${sourceIdOf(e)}`) || "(未知任务)";
-      const detail = detailMap.get(`${e.source_type}:${sourceIdOf(e)}`);
+      const label = labelMap.get(e.task_id) || "(未知任务)";
+      const detail = detailMap.get(e.task_id);
       const errs = [
         ...validateOwnFields(e, SUMMARY_REQUIRED_FIELDS),
         ...conditionalFieldErrors(e),
@@ -220,16 +218,15 @@ export function mountSummarySection(root, { allModules }) {
         listWeeklyTaskEntries(week.id, "plan"),
         listWeeklyTaskEntries(week.id, "summary"),
       ]);
-      const alreadySummarized = new Set(existingSummary.map((e) => `${e.source_type}:${sourceIdOf(e)}`));
-      const toCreate = planEntries.filter((p) => !alreadySummarized.has(`${p.source_type}:${sourceIdOf(p)}`));
+      const alreadySummarized = new Set(existingSummary.map((e) => e.task_id));
+      const toCreate = planEntries.filter((p) => !alreadySummarized.has(p.task_id));
       const soleModuleId = allModules.length === 1 ? allModules[0].id : null;
 
       for (const p of toCreate) {
         await createWeeklyTaskEntry({
           meeting_week_id: week.id,
           appears_in: "summary",
-          source_type: p.source_type,
-          [sourceColumnFor(p.source_type)]: sourceIdOf(p),
+          task_id: p.task_id,
           module_id: p.module_id ?? soleModuleId,
           summary_category: "计划内",
           owner: p.owner,
@@ -253,14 +250,13 @@ export function mountSummarySection(root, { allModules }) {
     if (!week) return;
     root.querySelector(".summary-tbody").innerHTML = `<tr><td colspan="18">加载中...</td></tr>`;
     const entries = await listWeeklyTaskEntries(week.id, "summary");
-    const labelItems = entries.map((e) => ({ source_type: e.source_type, source_id: sourceIdOf(e) }));
-    const detailMap = await buildSourceDetailMap(labelItems);
+    const detailMap = await buildSourceDetailMap(entries.map((e) => e.task_id));
 
     const tbody = root.querySelector(".summary-tbody");
     tbody.innerHTML = "";
     const dis = isSummaryLocked() ? "disabled" : "";
     for (const e of entries) {
-      const detail = detailMap.get(`${e.source_type}:${sourceIdOf(e)}`) || {};
+      const detail = detailMap.get(e.task_id) || {};
       const disReason = dis || e.status !== "未完成" ? "disabled" : "";
       const tr = document.createElement("tr");
       tr.innerHTML = `
@@ -300,13 +296,13 @@ export function mountSummarySection(root, { allModules }) {
         });
         if (status) {
           // "已完成"不等于任务本身最终完成——本周交付材料要跟最终目标交付物文字严格相等
-          // (去首尾空格)才算数，复杂任务允许跨周分批交付，见taskLabels.js的syncSourceStatus注释。
+          // (去首尾空格)才算数，复杂任务允许跨周分批交付，见taskLabels.js的syncTaskStatus注释。
           const isFinal = !!(
             detail.targetDeliverable &&
             deliverableThisWeek &&
             deliverableThisWeek.trim() === detail.targetDeliverable.trim()
           );
-          await syncSourceStatus(e.source_type, sourceIdOf(e), status, { isFinal });
+          await syncTaskStatus(e.task_id, status, { isFinal });
         }
       };
       tr.querySelectorAll("select:not(.f-status), input").forEach((el) => el.addEventListener("change", save));
@@ -317,7 +313,7 @@ export function mountSummarySection(root, { allModules }) {
       tr.querySelector(".f-delete").addEventListener("click", async () => {
         await deleteWeeklyTaskEntry(e.id);
         await loadSummary();
-        await populateUnplannedOptions();
+        await loadUnplannedCandidates();
       });
       tbody.appendChild(tr);
     }
@@ -338,11 +334,8 @@ export function mountSummarySection(root, { allModules }) {
       listWeeklyTaskEntries(week.id, "plan"),
       listWeeklyTaskEntries(week.id, "summary"),
     ]);
-    const excluded = new Set([
-      ...planEntries.map((e) => `${e.source_type}:${sourceIdOf(e)}`),
-      ...summaryEntries.map((e) => `${e.source_type}:${sourceIdOf(e)}`),
-    ]);
-    unplannedCandidates = all.filter((c) => !excluded.has(`${c.source_type}:${c.source_id}`));
+    const excluded = new Set([...planEntries.map((e) => e.task_id), ...summaryEntries.map((e) => e.task_id)]);
+    unplannedCandidates = all.filter((c) => !excluded.has(c.task_id));
     renderUnplannedPicker();
   }
 
@@ -360,8 +353,7 @@ export function mountSummarySection(root, { allModules }) {
       await createWeeklyTaskEntry({
         meeting_week_id: week.id,
         appears_in: "summary",
-        source_type: c.source_type,
-        [sourceColumnFor(c.source_type)]: c.source_id,
+        task_id: c.task_id,
         module_id: c.module_id ?? soleModuleId,
         summary_category: "计划外",
         owner: c.owner,

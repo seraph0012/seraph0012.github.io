@@ -3,23 +3,18 @@
 // 校验范围不能只看这两个页面自己的表单字段——任务1/2/3级标题、最终目标交付物、最终计划
 // 完成时间这些是在tasks.html里填的，PPT里一样会用到，所以也要查。
 
-// 按来源类型，哪些"源表字段"是这个类型结构上应该有的——三种类型(顺序队列/截止日期/循环任务)
-// 现在都要求有最终目标交付物+最终计划完成时间(2026-07-10用户明确要求统一，顺序队列
-// 原来没有完成时间概念，现在补上了planned_completion_date字段)
-const REQUIRED_DETAIL_BY_TYPE = {
-  queue_task: ["targetDeliverable", "completionDate"],
-  milestone: ["targetDeliverable", "completionDate"],
-  recurring_instance: ["targetDeliverable", "completionDate"],
-};
+// 2026-07-14任务数据模型统一重构后，所有任务类型(顺序队列/截止日期/循环任务)结构上都要求
+// 有最终目标交付物+最终计划完成时间，不再需要按source_type分支的字典。
+const REQUIRED_DETAIL_FIELDS = ["targetDeliverable", "completionDate"];
 const DETAIL_FIELD_LABEL = { targetDeliverable: "最终目标交付物", completionDate: "计划完成时间" };
 
-// 检查跨页面的源表字段（标题/目标交付物/计划完成时间），不检查weekly_task_entries自己的字段
+// 检查跨页面的任务字段（标题/目标交付物/计划完成时间），不检查weekly_task_entries自己的字段
 export function validateSourceDetail(entry, detail) {
   if (!detail || !detail.level1Text) {
     return ["任务标题缺失（去对应项目/任务详情页补充标题）"];
   }
   const errors = [];
-  for (const field of REQUIRED_DETAIL_BY_TYPE[entry.source_type] || []) {
+  for (const field of REQUIRED_DETAIL_FIELDS) {
     if (!detail[field]) {
       errors.push(`缺少${DETAIL_FIELD_LABEL[field]}（去对应项目/任务详情页补充）`);
     }

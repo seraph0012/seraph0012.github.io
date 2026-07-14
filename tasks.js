@@ -4,39 +4,26 @@ import {
   listModules,
   listPeople,
   listMeetingWeeks,
-  listQueueProjects,
-  createQueueProject,
-  updateQueueProject,
-  deleteQueueProject,
-  addQueueProjectTask,
-  updateQueueProjectTask,
-  deleteQueueProjectTask,
-  upsertQueueTaskGroup,
-  listDeadlineProjects,
-  createDeadlineProject,
-  updateDeadlineProject,
-  deleteDeadlineProject,
-  addMilestone,
-  updateMilestone,
-  deleteMilestone,
-  upsertMilestoneGroup,
-  listRecurringTemplates,
-  createRecurringTemplate,
-  updateRecurringTemplate,
-  deleteRecurringTemplate,
-  addRecurringInstance,
-  updateRecurringInstance,
-  deleteRecurringInstance,
+  listProjects,
+  createProject,
+  createRecurringProject,
+  updateProject,
+  updateRecurringSettings,
+  deleteProject,
+  addTask,
+  updateTask,
+  deleteTask,
+  upsertTaskGroup,
   claimTaskNumber,
   setTaskNumberOwner,
   suggestNextTaskNumber,
   deleteTaskNumber,
-  listPlannedSourceIds,
-  countWeeklyTaskEntriesForSource,
-  deleteWeeklyTaskEntriesForSource,
+  listPlannedTaskIds,
+  countWeeklyTaskEntriesForTask,
+  deleteWeeklyTaskEntriesForTask,
 } from "./shared/db.js";
 import { cacheFirst } from "./shared/localCache.js";
-import { SOURCE_STATUS_LABEL } from "./shared/taskLabels.js";
+import { SOURCE_STATUS_LABEL, PROJECT_TYPE_LABEL } from "./shared/taskLabels.js";
 
 const session = await requireAuth();
 if (!session) {
@@ -44,15 +31,13 @@ if (!session) {
 }
 renderNav();
 
-const highlightKey = new URLSearchParams(window.location.search).get("highlight"); // 例如 "queue_task:123"
+const highlightKey = new URLSearchParams(window.location.search).get("highlight"); // 例如 "task:123"
 
 let allModules = [];
 let allPeople = [];
 let allWeeksRaw = []; // 未过滤，起始/新增例会周下拉用
 let allWeeks = []; // 过滤掉is_normal=false，循环任务编号算法用
-let queueProjects = [];
-let deadlineProjects = [];
-let recurringTemplates = [];
+let projects = []; // 2026-07-14统一任务模型：sequential/nonsequential/recurring三种project_type都在这一个数组里
 const openDetailKeys = new Set();
 if (highlightKey) openDetailKeys.add(highlightKey);
 
@@ -96,18 +81,18 @@ function weekOptionsHtml(selectedId) {
     .join("");
 }
 
-// 删除一个（或一批）源任务前，先把引用它们的weekly_task_entries清掉——这些FK没有
-// ON DELETE CASCADE(历史周记录不该被源任务删除静默带走)，直接删源任务会被DB挡住。
-async function confirmAndCascadeDelete({ label, sourceColumn, sourceIds, deleteFn }) {
+// 删除一个（或一批）任务前，先把引用它们的weekly_task_entries清掉——这些FK没有
+// ON DELETE CASCADE(历史周记录不该被源任务删除静默带走)，直接删任务会被DB挡住。
+async function confirmAndCascadeDelete({ label, taskIds, deleteFn }) {
   let total = 0;
-  for (const id of sourceIds) total += await countWeeklyTaskEntriesForSource(sourceColumn, id);
+  for (const id of taskIds) total += await countWeeklyTaskEntriesForTask(id);
   const warn =
     total > 0
       ? `\n\n注意：还有${total}条计划/总结条目引用着，会一并删除（如果已经生成过PPT，这些历史记录也会消失）。`
       : "";
   if (!confirm(`确定删除"${label}"？此操作不可撤销。${warn}`)) return false;
-  for (const id of sourceIds) {
-    await deleteWeeklyTaskEntriesForSource(sourceColumn, id);
+  for (const id of taskIds) {
+    await deleteWeeklyTaskEntriesForTask(id);
   }
   await deleteFn();
   return true;
@@ -118,9 +103,10 @@ async function confirmAndCascadeDelete({ label, sourceColumn, sourceIds, deleteF
 // weekly频率 - 同月内下一次实例level3=上一实例level3+1(跳过的周顺延递补，不留空号)；
 // 跨自然月则level2+1、level3重置为1，且无论中间跳过几个月都只+1(顺延式)。
 // monthly频率则level2=上一实例level2+1，不使用level3。
-function computeNextNumber(template, instances, targetWeek) {
+function computeNextNumber(project, instances, targetWeek) {
+  const frequency = project.recurring_project_settings.frequency;
   if (instances.length === 0) {
-    return { level2: 1, level3: template.frequency === "monthly" ? null : 1 };
+    return { level2: 1, level3: frequency === "monthly" ? null : 1 };
   }
   const sorted = [...instances].sort((a, b) => {
     const wa = allWeeks.find((w) => w.id === a.meeting_week_id);
@@ -130,19 +116,19 @@ function computeNextNumber(template, instances, targetWeek) {
   const last = sorted[sorted.length - 1];
   const lastWeek = allWeeks.find((w) => w.id === last.meeting_week_id);
 
-  if (template.frequency === "monthly") {
-    return { level2: last.level2_number + 1, level3: null };
+  if (frequency === "monthly") {
+    return { level2: last.wbs_level2_number + 1, level3: null };
   }
   const sameMonth = lastWeek.calendar_month === targetWeek.calendar_month;
   if (sameMonth) {
-    return { level2: last.level2_number, level3: last.level3_number + 1 };
+    return { level2: last.wbs_level2_number, level3: last.wbs_level3_number + 1 };
   }
-  return { level2: last.level2_number + 1, level3: 1 };
+  return { level2: last.wbs_level2_number + 1, level3: 1 };
 }
 
-// 循环任务模板不再存"起始例会周"这个字段(2026-07-10跟用户确认去掉——这个信息只在创建
-// 模板时用一次，创建时就直接生成第一个实例，之后"下一个实例"永远只看"已有实例里最早的
-// 那一个"往后找，不需要模板额外记一个开始日期)
+// 循环任务项目不再存"起始例会周"这个字段(2026-07-10跟用户确认去掉——这个信息只在创建
+// 项目时用一次，创建时就直接生成第一个实例，之后"下一个实例"永远只看"已有实例里最早的
+// 那一个"往后找，不需要项目额外记一个开始日期)
 function nextUnusedWeek(instances) {
   if (instances.length === 0) return allWeeks[0] ?? null;
   const usedWeekIds = new Set(instances.map((i) => i.meeting_week_id));
@@ -161,12 +147,21 @@ function nextUnusedWeek(instances) {
 // ---------------- 新建任务表单 ----------------
 
 function ownerOptionsHtml() {
-  const queueOpts = queueProjects.map((p) => `<option value="queue:${p.id}">[${p.level1_number}] ${p.title}</option>`).join("");
-  const deadlineOpts = deadlineProjects.map((p) => `<option value="deadline:${p.id}">[${p.level1_number}] ${p.title}</option>`).join("");
-  const recurringOpts = recurringTemplates.map((t) => `<option value="recurring:${t.id}">[${t.level1_number}] ${t.title}</option>`).join("");
+  const seqOpts = projects
+    .filter((p) => p.project_type === "sequential")
+    .map((p) => `<option value="sequential:${p.id}">[${p.level1_number}] ${p.title}</option>`)
+    .join("");
+  const nonseqOpts = projects
+    .filter((p) => p.project_type === "nonsequential")
+    .map((p) => `<option value="nonsequential:${p.id}">[${p.level1_number}] ${p.title}</option>`)
+    .join("");
+  const recurringOpts = projects
+    .filter((p) => p.project_type === "recurring")
+    .map((p) => `<option value="recurring:${p.id}">[${p.level1_number}] ${p.title}</option>`)
+    .join("");
   return `
-    <optgroup label="顺序队列"><option value="new:queue">+ 新建顺序队列项目</option>${queueOpts}</optgroup>
-    <optgroup label="截止日期"><option value="new:deadline">+ 新建截止日期项目</option>${deadlineOpts}</optgroup>
+    <optgroup label="顺序队列"><option value="new:sequential">+ 新建顺序队列项目</option>${seqOpts}</optgroup>
+    <optgroup label="截止日期"><option value="new:nonsequential">+ 新建截止日期项目</option>${nonseqOpts}</optgroup>
     <optgroup label="循环任务"><option value="new:recurring">+ 新建循环任务</option>${recurringOpts}</optgroup>
   `;
 }
@@ -190,9 +185,8 @@ function refreshLevel2Options(sel) {
     onLevel2Change(sel);
     return;
   }
-  const list = sel.type === "queue" ? queueProjects : deadlineProjects;
-  const project = list.find((p) => p.id === sel.id);
-  const children = sel.type === "queue" ? project.queue_project_tasks : project.deadline_milestones;
+  const project = projects.find((p) => p.id === sel.id);
+  const children = project.tasks;
   const groups = [...new Set(children.filter((c) => c.wbs_level2_number != null).map((c) => c.wbs_level2_number))].sort(
     (a, b) => a - b
   );
@@ -227,9 +221,8 @@ function onLevel2Change(sel) {
     }
     return;
   }
-  const list = sel.type === "queue" ? queueProjects : deadlineProjects;
-  const project = list.find((p) => p.id === sel.id);
-  const children = sel.type === "queue" ? project.queue_project_tasks : project.deadline_milestones;
+  const project = projects.find((p) => p.id === sel.id);
+  const children = project.tasks;
   if (isNewLevel2) {
     const existingLevel2 = children.filter((c) => c.wbs_level2_number != null).map((c) => c.wbs_level2_number);
     const maxLevel2 = existingLevel2.length ? Math.max(...existingLevel2) : 0;
@@ -250,50 +243,47 @@ function onLevel2Change(sel) {
 
 document.getElementById("wbs-level2-select").addEventListener("change", () => onLevel2Change(parseOwnerValue()));
 
-// 循环任务标题/最终交付物按当次生成的月/周动态拼出来(2026-07-10用户要求)——
-// 模板本身只存"动词前缀(title_verb)+名词部分(title_noun)"，比如"制作"+"周例会PPT"，
-// 每次生成实例时现算出"7月第4周"这种限定语插进去。monthly频率没有level3(月内不再细分)，
-// 限定语只用月份。交付物不带动词前缀(交付物是"7月第4周周例会PPT"，不是"制作7月第4周
-// 周例会PPT")——判断任务是否最终完成，靠的正是拿每周填的"本周交付物"去精确匹配这个值，
-// 所以必须按当周现算，不能是模板级别固定不变的字符串。
+// 循环任务标题/最终交付物按当次生成的月/周动态拼出来——项目只存"动词前缀(title_verb)+
+// 名词部分(title_noun)"，比如"制作"+"周例会PPT"，每次生成实例时现算出"7月第4周"这种限定语
+// 插进去。monthly频率没有level3(月内不再细分)，限定语只用月份。交付物不带动词前缀。
 // "第几周"用的是level3(这个循环任务在本月内的第几次执行，顺延递补算法算出来的)，不是
-// 自然日历的week_index_in_month——2026-07-10用户明确要求：这个数字表示的是"这个月第几次
-// 做这个周任务"，如果某周被跳过、后面顺延递补，编号跟自然周数就会不一样，要用编号本身。
+// 自然日历的week_index_in_month。
 function monthWeekLabel(targetWeek, frequency, level3) {
   const month = Number(targetWeek.calendar_month.slice(5, 7));
   return frequency === "monthly" ? `${month}月` : `${month}月第${level3}周`;
 }
-function generateInstanceTitle(template, targetWeek, level3) {
-  return `${template.title_verb}${monthWeekLabel(targetWeek, template.frequency, level3)}${template.title_noun}`;
+function generateInstanceTitle(titleVerb, titleNoun, frequency, targetWeek, level3) {
+  return `${titleVerb}${monthWeekLabel(targetWeek, frequency, level3)}${titleNoun}`;
 }
-function generateInstanceDeliverable(template, targetWeek, level3) {
-  return `${monthWeekLabel(targetWeek, template.frequency, level3)}${template.title_noun}`;
+function generateInstanceDeliverable(titleVerb, titleNoun, frequency, targetWeek, level3) {
+  return `${monthWeekLabel(targetWeek, frequency, level3)}${titleNoun}`;
 }
 
-function refreshRecurringPreview(templateId) {
-  const t = recurringTemplates.find((x) => x.id === templateId);
+function refreshRecurringPreview(projectId) {
+  const p = projects.find((x) => x.id === projectId);
+  const s = p.recurring_project_settings;
   const previewEl = document.getElementById("recurring-instance-preview");
-  const targetWeek = nextUnusedWeek(t.recurring_task_instances);
+  const targetWeek = nextUnusedWeek(p.tasks);
   if (!targetWeek) {
     previewEl.textContent = "没有更多可用的例会周了，请先在例会日历里预生成更多周";
     previewEl.className = "status error";
     return;
   }
-  const { level2, level3 } = computeNextNumber(t, t.recurring_task_instances, targetWeek);
-  const fullNumber = level3 != null ? `${t.level1_number}.${level2}.${level3}` : `${t.level1_number}.${level2}`;
-  const title = generateInstanceTitle(t, targetWeek, level3);
-  const deliverable = generateInstanceDeliverable(t, targetWeek, level3);
+  const { level2, level3 } = computeNextNumber(p, p.tasks, targetWeek);
+  const fullNumber = wbsLabel(p.level1_number, level2, level3);
+  const title = generateInstanceTitle(s.title_verb, s.title_noun, s.frequency, targetWeek, level3);
+  const deliverable = generateInstanceDeliverable(s.title_verb, s.title_noun, s.frequency, targetWeek, level3);
   previewEl.textContent = `将生成实例 ${fullNumber}「${title}」（对应例会周 ${targetWeek.natural_week_start}，最终交付物：${deliverable}）`;
   previewEl.className = "status";
 }
 
 async function onOwnerChange() {
   const sel = parseOwnerValue();
-  const isQueueOrDeadline = sel.type === "queue" || sel.type === "deadline";
+  const isTaskList = sel.type === "sequential" || sel.type === "nonsequential";
   document.getElementById("new-project-fields").hidden = !sel.isNew;
   document.getElementById("new-project-title-wrap").hidden = sel.type === "recurring";
-  document.getElementById("new-project-deadline-wrap").hidden = sel.type !== "deadline";
-  document.getElementById("leaf-fields").hidden = !isQueueOrDeadline;
+  document.getElementById("new-project-extra-wrap").hidden = sel.type === "recurring";
+  document.getElementById("leaf-fields").hidden = !isTaskList;
   document.getElementById("recurring-new-fields").hidden = !(sel.isNew && sel.type === "recurring");
   document.getElementById("recurring-instance-fields").hidden = !(sel.type === "recurring" && !sel.isNew);
   document.getElementById("create-submit-btn").textContent = sel.type === "recurring" && !sel.isNew ? "生成下一个实例" : "新建";
@@ -301,7 +291,7 @@ async function onOwnerChange() {
   if (sel.isNew) {
     document.getElementById("new-project-number").value = await suggestNextTaskNumber();
   }
-  if (isQueueOrDeadline) {
+  if (isTaskList) {
     refreshLevel2Options(sel);
     document.getElementById("leaf-module").innerHTML = moduleOptionsHtmlStrict(soleModuleId());
     document.getElementById("leaf-owner").innerHTML = peopleOptionsHtml(solePersonName());
@@ -317,10 +307,11 @@ async function onOwnerChange() {
 
 document.getElementById("owner-select").addEventListener("change", onOwnerChange);
 
-async function createQueueOrDeadlineLeaf(sel) {
+async function createTaskListLeaf(sel) {
   const title = document.getElementById("leaf-title").value.trim();
   const deliverable = document.getElementById("leaf-deliverable").value.trim();
   const completionDate = document.getElementById("leaf-completion-date").value;
+  const startDate = document.getElementById("leaf-start-date").value;
   const moduleId = document.getElementById("leaf-module").value || null;
   const owner = document.getElementById("leaf-owner").value.trim();
   const level2Select = document.getElementById("wbs-level2-select");
@@ -336,9 +327,8 @@ async function createQueueOrDeadlineLeaf(sel) {
   if (!title || !deliverable || !completionDate || !moduleId || !owner) {
     throw new Error("任务标题/模块/责任人/最终目标交付物/最终计划完成时间都是必填项");
   }
-  // 有1、2、3级的任务每一级都要有标题(2026-07-10用户明确要求)——新建一个从没出现过的
-  // 二级编号、同时又填了三级编号，说明这是在从头搭一个真正的3级任务，二级本身也要有标题
-  // (二级不再是叶子、不会展示自己的title列，只能在这里/或者建完后去表格里的二级分组行补)
+  // 有1、2、3级的任务每一级都要有标题——新建一个从没出现过的二级编号、同时又填了三级编号，
+  // 说明这是在从头搭一个真正的3级任务，二级本身也要有标题
   if (isNewLevel2Group && level3 != null && !level2Title) {
     throw new Error("这个二级任务下有三级子任务，必须填写二级标题");
   }
@@ -351,52 +341,42 @@ async function createQueueOrDeadlineLeaf(sel) {
     const numberRow = await claimTaskNumber({
       task_type: sel.type,
       title_snapshot: projTitle,
-      owning_table: sel.type === "queue" ? "queue_projects" : "deadline_projects",
+      owning_table: "projects",
       owning_id: 0,
       level1_number: level1Number,
     });
-    if (sel.type === "queue") {
-      const category = document.getElementById("new-project-category").value.trim() || null;
-      const p = await createQueueProject({ title: projTitle, category, level1_number: numberRow.level1_number });
-      projectId = p.id;
-    } else {
-      const deadlineDate = document.getElementById("new-project-deadline").value;
-      if (!deadlineDate) throw new Error("请填写项目截止日期");
-      const p = await createDeadlineProject({
-        title: projTitle,
-        deadline_date: deadlineDate,
-        level1_number: numberRow.level1_number,
-      });
-      projectId = p.id;
-    }
+    // 分类/截止日期/项目最终交付物现在是任何task_list类型项目都可选填的通用字段
+    // (2026-07-14统一重构前，分类只属于顺序队列、截止日期+项目交付物只属于截止日期类型；
+    // 用户核实过下游代码没有真正依赖这种区分，统一放开)
+    const category = document.getElementById("new-project-category").value.trim() || null;
+    const deadlineDate = document.getElementById("new-project-deadline").value || null;
+    const projectDeliverable = document.getElementById("new-project-deliverable").value.trim() || null;
+    const p = await createProject({
+      title: projTitle,
+      project_type: sel.type,
+      category,
+      deadline_date: deadlineDate,
+      target_deliverable: projectDeliverable,
+      level1_number: numberRow.level1_number,
+    });
+    projectId = p.id;
     await setTaskNumberOwner(numberRow.level1_number, projectId);
   } else {
     projectId = sel.id;
   }
 
-  if (sel.type === "queue") {
-    await addQueueProjectTask(projectId, {
-      wbs_level2_number: level2,
-      wbs_level3_number: level3,
-      title,
-      module_id: moduleId,
-      owner,
-      target_deliverable: deliverable,
-      planned_completion_date: completionDate,
-    });
-  } else {
-    await addMilestone(projectId, {
-      wbs_level2_number: level2,
-      wbs_level3_number: level3,
-      title,
-      module_id: moduleId,
-      owner,
-      target_deliverable: deliverable,
-      planned_date: completionDate,
-    });
-  }
+  await addTask(projectId, {
+    wbs_level2_number: level2,
+    wbs_level3_number: level3,
+    title,
+    module_id: moduleId,
+    owner,
+    target_deliverable: deliverable,
+    planned_completion_date: completionDate,
+    planned_start_date: startDate || null,
+  });
   if (isNewLevel2Group && level3 != null && level2Title) {
-    await (sel.type === "queue" ? upsertQueueTaskGroup(projectId, level2, level2Title) : upsertMilestoneGroup(projectId, level2, level2Title));
+    await upsertTaskGroup(projectId, level2, level2Title);
   }
 }
 
@@ -414,52 +394,48 @@ async function createRecurringNew() {
   const numberRow = await claimTaskNumber({
     task_type: "recurring",
     title_snapshot: title,
-    owning_table: "recurring_task_templates",
+    owning_table: "projects",
     owning_id: 0,
     level1_number: level1Number,
   });
   const frequency = document.getElementById("recurring-frequency").value;
-  const template = await createRecurringTemplate({
-    title,
-    title_verb: titleVerb,
-    title_noun: titleNoun,
-    module_id: moduleId,
-    owner,
-    frequency,
-    level1_number: numberRow.level1_number,
-  });
-  await setTaskNumberOwner(numberRow.level1_number, template.id);
-  // 起始例会周只在这里用一次，直接生成第一个实例，不作为模板的持久字段保存
-  // due_date默认用work_week_end(本周最后工作日，默认周五)而不是meeting_date(本周工作
-  // 开始日，默认周一)——2026-07-10用户明确要求："本周完成"应该默认对应周五，不是周一
+  const project = await createRecurringProject(
+    { title, project_type: "recurring", level1_number: numberRow.level1_number },
+    { title_verb: titleVerb, title_noun: titleNoun, frequency, module_id: moduleId, owner }
+  );
+  await setTaskNumberOwner(numberRow.level1_number, project.id);
+  // 第一次的例会周只在这里用一次，直接生成第一个实例，不作为项目的持久字段保存
+  // planned_completion_date默认用work_week_end(本周最后工作日，默认周五)而不是meeting_date
+  // (本周工作开始日，默认周一)——"这周完成"应该默认对应周五，不是周一
   const firstWeek = allWeeksRaw.find((w) => w.id === firstWeekId);
   const level3 = frequency === "monthly" ? null : 1;
-  const fullNumber = level3 != null ? `${numberRow.level1_number}.1.${level3}` : `${numberRow.level1_number}.1`;
-  await addRecurringInstance(template.id, {
+  await addTask(project.id, {
     meeting_week_id: firstWeekId,
-    level2_number: 1,
-    level3_number: level3,
-    full_number: fullNumber,
-    due_date: firstWeek.work_week_end,
-    title: generateInstanceTitle(template, firstWeek, level3),
-    target_deliverable: generateInstanceDeliverable(template, firstWeek, level3),
+    wbs_level2_number: 1,
+    wbs_level3_number: level3,
+    module_id: moduleId,
+    owner,
+    planned_completion_date: firstWeek.work_week_end,
+    title: generateInstanceTitle(titleVerb, titleNoun, frequency, firstWeek, level3),
+    target_deliverable: generateInstanceDeliverable(titleVerb, titleNoun, frequency, firstWeek, level3),
   });
 }
 
-async function generateNextInstance(templateId) {
-  const t = recurringTemplates.find((x) => x.id === templateId);
-  const targetWeek = nextUnusedWeek(t.recurring_task_instances);
+async function generateNextInstance(projectId) {
+  const p = projects.find((x) => x.id === projectId);
+  const s = p.recurring_project_settings;
+  const targetWeek = nextUnusedWeek(p.tasks);
   if (!targetWeek) throw new Error("没有更多可用的例会周了，请先在例会日历里预生成更多周");
-  const { level2, level3 } = computeNextNumber(t, t.recurring_task_instances, targetWeek);
-  const fullNumber = level3 != null ? `${t.level1_number}.${level2}.${level3}` : `${t.level1_number}.${level2}`;
-  await addRecurringInstance(t.id, {
+  const { level2, level3 } = computeNextNumber(p, p.tasks, targetWeek);
+  await addTask(p.id, {
     meeting_week_id: targetWeek.id,
-    level2_number: level2,
-    level3_number: level3,
-    full_number: fullNumber,
-    due_date: targetWeek.work_week_end,
-    title: generateInstanceTitle(t, targetWeek, level3),
-    target_deliverable: generateInstanceDeliverable(t, targetWeek, level3),
+    wbs_level2_number: level2,
+    wbs_level3_number: level3,
+    module_id: s.module_id,
+    owner: s.owner,
+    planned_completion_date: targetWeek.work_week_end,
+    title: generateInstanceTitle(s.title_verb, s.title_noun, s.frequency, targetWeek, level3),
+    target_deliverable: generateInstanceDeliverable(s.title_verb, s.title_noun, s.frequency, targetWeek, level3),
   });
 }
 
@@ -475,7 +451,7 @@ document.getElementById("create-form").addEventListener("submit", async (e) => {
     } else if (sel.type === "recurring" && !sel.isNew) {
       await generateNextInstance(sel.id);
     } else {
-      await createQueueOrDeadlineLeaf(sel);
+      await createTaskListLeaf(sel);
     }
     resultEl.textContent = "成功";
     resultEl.className = "status ok";
@@ -483,6 +459,7 @@ document.getElementById("create-form").addEventListener("submit", async (e) => {
     document.getElementById("leaf-title").value = "";
     document.getElementById("leaf-deliverable").value = "";
     document.getElementById("leaf-completion-date").value = "";
+    document.getElementById("leaf-start-date").value = "";
     document.getElementById("wbs-level2-title").value = "";
     document.getElementById("recurring-title-verb").value = "";
     document.getElementById("recurring-title-noun").value = "";
@@ -519,25 +496,22 @@ function moduleNameFor(moduleId) {
   return allModules.find((m) => m.id === moduleId)?.name ?? "";
 }
 
-function makeLeafRow(type, typeLabel, project, item, number) {
-  const isQueue = type === "queue";
-  const isDeadline = type === "deadline";
-  const isRecurring = type === "recurring";
-  const moduleId = isRecurring ? project.module_id : item.module_id;
-  const owner = isRecurring ? project.owner : item.owner;
+// 2026-07-14统一任务模型后，module_id/owner/planned_completion_date/actual_completion_date
+// 在三种project_type下都是同一批列名，不再需要按类型分支特判
+function makeLeafRow(project, item, number) {
   return {
     kind: "leaf",
-    key: isQueue ? `queue_task:${item.id}` : isDeadline ? `milestone:${item.id}` : `recurring_instance:${item.id}`,
-    type,
-    typeLabel,
+    key: `task:${item.id}`,
+    type: project.project_type,
+    typeLabel: PROJECT_TYPE_LABEL[project.project_type],
     number,
     projectName: project.title,
-    title: isRecurring ? item.title || project.title : item.title,
-    moduleName: moduleNameFor(moduleId),
-    owner: owner ?? "",
+    title: item.title,
+    moduleName: moduleNameFor(item.module_id),
+    owner: item.owner ?? "",
     deliverable: item.target_deliverable,
-    completionDate: isQueue ? item.planned_completion_date : isDeadline ? item.planned_date : item.due_date,
-    actualDate: item.actual_completion_date ?? item.actual_date,
+    completionDate: item.planned_completion_date,
+    actualDate: item.actual_completion_date,
     status: SOURCE_STATUS_LABEL[item.status] ?? item.status,
     project,
     item,
@@ -547,79 +521,56 @@ function makeLeafRow(type, typeLabel, project, item, number) {
 function buildDisplayRows() {
   const displayRows = [];
 
-  for (const p of queueProjects) {
-    const { direct, level2Groups } = groupChildren(p.queue_project_tasks);
+  for (const p of projects) {
+    if (p.project_type === "recurring") continue;
+    const { direct, level2Groups } = groupChildren(p.tasks);
     if (!direct && level2Groups.length === 0) continue; // 空项目(还没建任何任务)暂不展示
-    displayRows.push({ kind: "project-header", label: `[${p.level1_number}] ${p.title}`, typeLabel: "顺序队列" });
-    if (direct) displayRows.push(makeLeafRow("queue", "顺序队列", p, direct, wbsLabel(p.level1_number, null, null)));
+    displayRows.push({ kind: "project-header", label: `[${p.level1_number}] ${p.title}`, typeLabel: PROJECT_TYPE_LABEL[p.project_type] });
+    if (direct) displayRows.push(makeLeafRow(p, direct, wbsLabel(p.level1_number, null, null)));
     for (const g of level2Groups) {
       if (g.items.length === 1 && g.items[0].wbs_level3_number == null) {
-        displayRows.push(makeLeafRow("queue", "顺序队列", p, g.items[0], wbsLabel(p.level1_number, g.level2, null)));
+        displayRows.push(makeLeafRow(p, g.items[0], wbsLabel(p.level1_number, g.level2, null)));
       } else {
-        const groupTitle = (p.queue_project_task_groups || []).find((x) => x.wbs_level2_number === g.level2)?.title || "";
+        const groupTitle = (p.task_groups || []).find((x) => x.wbs_level2_number === g.level2)?.title || "";
         displayRows.push({
           kind: "level2-header",
           label: `${p.level1_number}.${g.level2}`,
           editableTitle: true,
-          type: "queue",
           project: p,
           level2: g.level2,
           groupTitle,
         });
         for (const t of g.items) {
-          displayRows.push(makeLeafRow("queue", "顺序队列", p, t, wbsLabel(p.level1_number, g.level2, t.wbs_level3_number)));
+          displayRows.push(makeLeafRow(p, t, wbsLabel(p.level1_number, g.level2, t.wbs_level3_number)));
         }
       }
     }
   }
 
-  for (const p of deadlineProjects) {
-    const { direct, level2Groups } = groupChildren(p.deadline_milestones);
-    if (!direct && level2Groups.length === 0) continue;
-    displayRows.push({ kind: "project-header", label: `[${p.level1_number}] ${p.title}`, typeLabel: "截止日期" });
-    if (direct) displayRows.push(makeLeafRow("deadline", "截止日期", p, direct, wbsLabel(p.level1_number, null, null)));
-    for (const g of level2Groups) {
-      if (g.items.length === 1 && g.items[0].wbs_level3_number == null) {
-        displayRows.push(makeLeafRow("deadline", "截止日期", p, g.items[0], wbsLabel(p.level1_number, g.level2, null)));
-      } else {
-        const groupTitle = (p.deadline_milestone_groups || []).find((x) => x.wbs_level2_number === g.level2)?.title || "";
-        displayRows.push({
-          kind: "level2-header",
-          label: `${p.level1_number}.${g.level2}`,
-          editableTitle: true,
-          type: "deadline",
-          project: p,
-          level2: g.level2,
-          groupTitle,
-        });
-        for (const m of g.items) {
-          displayRows.push(makeLeafRow("deadline", "截止日期", p, m, wbsLabel(p.level1_number, g.level2, m.wbs_level3_number)));
-        }
-      }
-    }
-  }
-
-  for (const t of recurringTemplates) {
-    if (t.recurring_task_instances.length === 0) continue;
-    displayRows.push({ kind: "project-header", label: `[${t.level1_number}] ${t.title}`, typeLabel: "循环任务" });
+  for (const p of projects) {
+    if (p.project_type !== "recurring") continue;
+    if (p.tasks.length === 0) continue;
+    displayRows.push({ kind: "project-header", label: `[${p.level1_number}] ${p.title}`, typeLabel: "循环任务" });
     const byLevel2 = new Map();
-    for (const inst of t.recurring_task_instances) {
-      if (!byLevel2.has(inst.level2_number)) byLevel2.set(inst.level2_number, []);
-      byLevel2.get(inst.level2_number).push(inst);
+    for (const inst of p.tasks) {
+      if (!byLevel2.has(inst.wbs_level2_number)) byLevel2.set(inst.wbs_level2_number, []);
+      byLevel2.get(inst.wbs_level2_number).push(inst);
     }
     const groups = [...byLevel2.entries()].sort((a, b) => a[0] - b[0]);
+    const s = p.recurring_project_settings;
     for (const [level2, items] of groups) {
-      const sortedItems = items.sort((a, b) => (a.level3_number ?? 0) - (b.level3_number ?? 0));
-      if (sortedItems.length === 1 && sortedItems[0].level3_number == null) {
-        displayRows.push(makeLeafRow("recurring", "循环任务", t, sortedItems[0], sortedItems[0].full_number));
+      const sortedItems = items.sort((a, b) => (a.wbs_level3_number ?? 0) - (b.wbs_level3_number ?? 0));
+      if (sortedItems.length === 1 && sortedItems[0].wbs_level3_number == null) {
+        displayRows.push(makeLeafRow(p, sortedItems[0], wbsLabel(p.level1_number, level2, null)));
       } else {
         // 2级分组标题也按月份现算(如"制作7月周例会PPT")，不只是干巴巴的编号——
-        // 取组内第一个实例的due_date所在月份，同一个level2分组下的实例本来就都在同一个月
-        const groupMonth = Number(sortedItems[0].due_date.slice(5, 7));
-        const groupLabel = `${t.level1_number}.${level2} ${t.title_verb}${groupMonth}月${t.title_noun}`;
+        // 取组内第一个实例的planned_completion_date所在月份，同一个level2分组下的实例
+        // 本来就都在同一个月
+        const groupMonth = Number(sortedItems[0].planned_completion_date.slice(5, 7));
+        const groupLabel = `${p.level1_number}.${level2} ${s.title_verb}${groupMonth}月${s.title_noun}`;
         displayRows.push({ kind: "level2-header", label: groupLabel });
         for (const inst of sortedItems) {
-          displayRows.push(makeLeafRow("recurring", "循环任务", t, inst, inst.full_number));
+          displayRows.push(makeLeafRow(p, inst, wbsLabel(p.level1_number, level2, inst.wbs_level3_number)));
         }
       }
     }
@@ -628,256 +579,161 @@ function buildDisplayRows() {
   return displayRows;
 }
 
-function terminateStatusFor(type) {
-  return type === "queue" ? "skipped" : "stopped";
-}
-
 function buildDetailPanel(r, locked) {
   const wrap = document.createElement("div");
-  if (r.type === "queue" || r.type === "deadline") {
-    const t = r.item;
-    const isQueue = r.type === "queue";
-    const completionValue = isQueue ? t.planned_completion_date : t.planned_date;
-    const noteValue = isQueue ? t.completion_date_amendment_note : t.planned_date_amendment_note;
-    const updateItemFn = isQueue ? updateQueueProjectTask : updateMilestone;
-    wrap.innerHTML = `
-      <div class="inline-form">
-        <label>标题 <input type="text" class="d-title" value="${t.title}" style="min-width:200px" /></label>
-        <label>模块 <select class="d-module">${moduleOptionsHtml(t.module_id)}</select></label>
-        <label>责任人 <select class="d-owner">${peopleOptionsHtml(t.owner, { allowEmpty: true })}</select></label>
-      </div>
-      <div class="inline-form" style="margin-top:6px;">
-        ${
-          locked
-            ? `<span class="d-locked-display">🔒 最终目标交付物：${t.target_deliverable ?? ""} ｜ 最终计划完成时间：${completionValue ?? ""}${
-                noteValue ? ` <span class="badge">订正：${noteValue}</span>` : ""
-              } <button type="button" class="secondary d-amend-toggle">订正</button></span>
-               <span class="d-amend-form" hidden>
-                 <label>新的最终目标交付物 <input type="text" class="d-amend-deliverable" value="${t.target_deliverable ?? ""}" style="min-width:200px" /></label>
-                 <label>新的最终计划完成时间 <input type="date" class="d-amend-date" value="${completionValue ?? ""}" /></label>
-                 <label>订正说明(必填) <input type="text" class="d-amend-note" placeholder="为什么要修改" style="min-width:200px" /></label>
-                 <button type="button" class="d-amend-confirm">确认订正</button>
-                 <button type="button" class="secondary d-amend-cancel">取消</button>
-               </span>`
-            : `<label>最终目标交付物 <input type="text" class="d-deliverable" value="${t.target_deliverable ?? ""}" style="min-width:200px" /></label>
-               <label>最终计划完成时间 <input type="date" class="d-completion" value="${completionValue ?? ""}" /></label>`
-        }
-        ${
-          !isQueue
-            ? `<label>实际日期 <input type="date" class="d-actual" value="${t.actual_date ?? ""}" /></label>`
-            : `<span>实际完成时间：${t.actual_completion_date ?? "(未完成)"}</span>`
-        }
-        <span>状态：${SOURCE_STATUS_LABEL[t.status] ?? t.status}</span>
-        ${t.status !== terminateStatusFor(r.type) ? `<button type="button" class="secondary d-terminate">标记中止</button>` : ""}
-        <button type="button" class="secondary d-delete">删除此任务</button>
-      </div>
-      <div class="inline-form" style="margin-top:6px;border-top:1px dashed #ccc;padding-top:6px;">
-        <strong>所属项目设置：</strong>
-        ${isQueue ? `<label>分类 <input type="text" class="p-category" value="${r.project.category ?? ""}" style="width:10em" /></label>` : ""}
-        ${!isQueue ? `<label>截止日期 <input type="date" class="p-deadline" value="${r.project.deadline_date}" /></label>` : ""}
-        <label>项目状态
-          <select class="p-status">
-            ${(isQueue ? ["active", "paused", "completed"] : ["active", "completed"])
-              .map((s) => `<option value="${s}" ${s === r.project.status ? "selected" : ""}>${s}</option>`)
-              .join("")}
-          </select>
-        </label>
-        ${!isQueue ? `<label>项目最终交付物 <input type="text" class="p-deliverable" value="${r.project.target_deliverable ?? ""}" /></label>` : ""}
-        <button type="button" class="secondary d-delete-project">删除整个项目</button>
-      </div>
-    `;
-    wrap.querySelector(".d-title").addEventListener("change", async (e) => {
-      await updateItemFn(t.id, { title: e.target.value });
-      await reloadAll();
-    });
-    wrap.querySelector(".d-module").addEventListener("change", async (e) => {
-      await updateItemFn(t.id, { module_id: e.target.value || null });
-      await reloadAll();
-    });
-    wrap.querySelector(".d-owner").addEventListener("change", async (e) => {
-      await updateItemFn(t.id, { owner: e.target.value || null });
-      await reloadAll();
-    });
-    const deliverableInputLoose = wrap.querySelector(".d-deliverable");
-    if (deliverableInputLoose) {
-      deliverableInputLoose.addEventListener("change", async (e) => {
-        await updateItemFn(t.id, { target_deliverable: e.target.value || null });
-        await reloadAll();
-      });
-    }
-    const completionInput = wrap.querySelector(".d-completion");
-    if (completionInput) {
-      completionInput.addEventListener("change", async (e) => {
-        await updateItemFn(t.id, isQueue ? { planned_completion_date: e.target.value } : { planned_date: e.target.value });
-        await reloadAll();
-      });
-    }
-    // 锁定后，最终目标交付物/最终计划完成时间要一起订正(不再是alert()两次弹窗那种很不方便的
-    // 交互，改成页面内的一个小表单)——一旦任务进了某一周的计划，这两项就跟"实际完成时间做
-    // 效率对比"这个目的绑在一起，改动都要求写清楚订正说明
-    const amendToggle = wrap.querySelector(".d-amend-toggle");
-    if (amendToggle) {
-      const amendForm = wrap.querySelector(".d-amend-form");
-      const lockedDisplay = wrap.querySelector(".d-locked-display");
-      amendToggle.addEventListener("click", () => {
-        lockedDisplay.hidden = true;
-        amendForm.hidden = false;
-      });
-      wrap.querySelector(".d-amend-cancel").addEventListener("click", () => {
-        amendForm.hidden = true;
-        lockedDisplay.hidden = false;
-      });
-      wrap.querySelector(".d-amend-confirm").addEventListener("click", async () => {
-        const note = wrap.querySelector(".d-amend-note").value.trim();
-        if (!note) {
-          alert("请填写订正说明");
-          return;
-        }
-        const newDeliverable = wrap.querySelector(".d-amend-deliverable").value.trim();
-        const newDate = wrap.querySelector(".d-amend-date").value;
-        await updateItemFn(
-          t.id,
-          isQueue
-            ? {
-                target_deliverable: newDeliverable || null,
-                planned_completion_date: newDate,
-                completion_date_amendment_note: note,
-              }
-            : {
-                target_deliverable: newDeliverable || null,
-                planned_date: newDate,
-                planned_date_amendment_note: note,
-              }
-        );
-        await reloadAll();
-      });
-    }
-    const actualInput = wrap.querySelector(".d-actual");
-    if (actualInput) {
-      actualInput.addEventListener("change", async (e) => {
-        await updateMilestone(t.id, { actual_date: e.target.value || null });
-        await reloadAll();
-      });
-    }
-    const terminateBtn = wrap.querySelector(".d-terminate");
-    if (terminateBtn) {
-      terminateBtn.addEventListener("click", async () => {
-        if (!confirm(`确定把"${t.title}"标记为中止？不用等总结周期，直接生效。`)) return;
-        await updateItemFn(t.id, { status: terminateStatusFor(r.type) });
-        await reloadAll();
-      });
-    }
-    wrap.querySelector(".d-delete").addEventListener("click", async () => {
-      const ok = await confirmAndCascadeDelete({
-        label: `任务"${t.title}"`,
-        sourceColumn: isQueue ? "source_queue_task_id" : "source_milestone_id",
-        sourceIds: [t.id],
-        deleteFn: () => (isQueue ? deleteQueueProjectTask(t.id) : deleteMilestone(t.id)),
-      });
-      if (ok) {
-        openDetailKeys.delete(r.key);
-        await reloadAll();
+  const t = r.item;
+  const p = r.project;
+  const isRecurring = p.project_type === "recurring";
+
+  wrap.innerHTML = `
+    <div class="inline-form">
+      <label>标题 <input type="text" class="d-title" value="${t.title}" style="min-width:200px" /></label>
+      <label>模块 <select class="d-module">${moduleOptionsHtml(t.module_id)}</select></label>
+      <label>责任人 <select class="d-owner">${peopleOptionsHtml(t.owner, { allowEmpty: true })}</select></label>
+      <label>预计开始日期 <input type="date" class="d-planned-start" value="${t.planned_start_date ?? ""}" /></label>
+      <span>实际开始日期：${t.actual_start_date ?? "(尚未进入任何一周计划)"}</span>
+    </div>
+    <div class="inline-form" style="margin-top:6px;">
+      ${
+        locked
+          ? `<span class="d-locked-display">🔒 最终目标交付物：${t.target_deliverable ?? ""} ｜ 最终计划完成时间：${t.planned_completion_date ?? ""}${
+              t.completion_date_amendment_note ? ` <span class="badge">订正：${t.completion_date_amendment_note}</span>` : ""
+            } <button type="button" class="secondary d-amend-toggle">订正</button></span>
+             <span class="d-amend-form" hidden>
+               <label>新的最终目标交付物 <input type="text" class="d-amend-deliverable" value="${t.target_deliverable ?? ""}" style="min-width:200px" /></label>
+               <label>新的最终计划完成时间 <input type="date" class="d-amend-date" value="${t.planned_completion_date ?? ""}" /></label>
+               <label>订正说明(必填) <input type="text" class="d-amend-note" placeholder="为什么要修改" style="min-width:200px" /></label>
+               <button type="button" class="d-amend-confirm">确认订正</button>
+               <button type="button" class="secondary d-amend-cancel">取消</button>
+             </span>`
+          : `<label>最终目标交付物 <input type="text" class="d-deliverable" value="${t.target_deliverable ?? ""}" style="min-width:200px" /></label>
+             ${
+               isRecurring
+                 ? `<span>应完成日期：${t.planned_completion_date}（按编号算法自动生成，不可手改，进入计划锁定后可走"订正"改）</span>`
+                 : `<label>最终计划完成时间 <input type="date" class="d-completion" value="${t.planned_completion_date ?? ""}" /></label>`
+             }`
       }
-    });
-    const categoryInput = wrap.querySelector(".p-category");
-    const deadlineInput = wrap.querySelector(".p-deadline");
-    const deliverableInput = wrap.querySelector(".p-deliverable");
-    const statusSelect = wrap.querySelector(".p-status");
-    const saveProject = async () => {
-      if (isQueue) {
-        await updateQueueProject(r.project.id, {
-          category: categoryInput.value.trim() || null,
-          status: statusSelect.value,
-        });
-      } else {
-        await updateDeadlineProject(r.project.id, {
-          deadline_date: deadlineInput.value,
-          status: statusSelect.value,
-          target_deliverable: deliverableInput.value.trim() || null,
-        });
+      <label>实际完成时间 <input type="date" class="d-actual" value="${t.actual_completion_date ?? ""}" /></label>
+      <span>状态：${SOURCE_STATUS_LABEL[t.status] ?? t.status}</span>
+      ${t.status !== "stopped" ? `<button type="button" class="secondary d-terminate">标记中止</button>` : ""}
+      <button type="button" class="secondary d-delete">删除此任务</button>
+    </div>
+    <div class="inline-form" style="margin-top:6px;border-top:1px dashed #ccc;padding-top:6px;">
+      ${
+        isRecurring
+          ? `<strong>所属循环任务设置（会影响这个项目下"生成下一个实例"时的默认命名，不会改已有实例）：</strong>
+             <label>动词前缀 <input type="text" class="p-title-verb" value="${p.recurring_project_settings.title_verb ?? ""}" placeholder="如：制作" style="width:100px" /></label>
+             <label>名词部分(交付物基础名) <input type="text" class="p-title-noun" value="${p.recurring_project_settings.title_noun ?? ""}" placeholder="如：周例会PPT" style="min-width:160px" /></label>
+             <select class="p-module">${moduleOptionsHtml(p.recurring_project_settings.module_id)}</select>
+             <input type="text" class="p-owner" value="${p.recurring_project_settings.owner ?? ""}" placeholder="责任人" />
+             <select class="p-frequency">
+               ${["weekly", "monthly", "custom"].map((f) => `<option value="${f}" ${f === p.recurring_project_settings.frequency ? "selected" : ""}>${f}</option>`).join("")}
+             </select>
+             <select class="p-status">
+               ${["active", "completed", "paused"].map((s) => `<option value="${s}" ${s === p.status ? "selected" : ""}>${s}</option>`).join("")}
+             </select>
+             <button type="button" class="secondary d-delete-project">删除整个循环任务</button>`
+          : `<strong>所属项目设置：</strong>
+             <label>分类 <input type="text" class="p-category" value="${p.category ?? ""}" style="width:10em" /></label>
+             <label>项目截止日期 <input type="date" class="p-deadline" value="${p.deadline_date ?? ""}" /></label>
+             <label>项目状态
+               <select class="p-status">
+                 ${["active", "paused", "completed"].map((s) => `<option value="${s}" ${s === p.status ? "selected" : ""}>${s}</option>`).join("")}
+               </select>
+             </label>
+             <label>项目最终交付物 <input type="text" class="p-deliverable" value="${p.target_deliverable ?? ""}" /></label>
+             <button type="button" class="secondary d-delete-project">删除整个项目</button>`
       }
+    </div>
+  `;
+
+  wrap.querySelector(".d-title").addEventListener("change", async (e) => {
+    await updateTask(t.id, { title: e.target.value });
+    await reloadAll();
+  });
+  wrap.querySelector(".d-module").addEventListener("change", async (e) => {
+    await updateTask(t.id, { module_id: e.target.value || null });
+    await reloadAll();
+  });
+  wrap.querySelector(".d-owner").addEventListener("change", async (e) => {
+    await updateTask(t.id, { owner: e.target.value || null });
+    await reloadAll();
+  });
+  wrap.querySelector(".d-planned-start").addEventListener("change", async (e) => {
+    await updateTask(t.id, { planned_start_date: e.target.value || null });
+    await reloadAll();
+  });
+  const deliverableInputLoose = wrap.querySelector(".d-deliverable");
+  if (deliverableInputLoose) {
+    deliverableInputLoose.addEventListener("change", async (e) => {
+      await updateTask(t.id, { target_deliverable: e.target.value || null });
       await reloadAll();
-    };
-    [categoryInput, deadlineInput, deliverableInput, statusSelect].filter(Boolean).forEach((el) => el.addEventListener("change", saveProject));
-    wrap.querySelector(".d-delete-project").addEventListener("click", async () => {
-      const children = isQueue ? r.project.queue_project_tasks : r.project.deadline_milestones;
-      const ok = await confirmAndCascadeDelete({
-        label: `项目"${r.project.title}"（含其下全部${children.length}个任务，编号${r.project.level1_number}会被释放可复用）`,
-        sourceColumn: isQueue ? "source_queue_task_id" : "source_milestone_id",
-        sourceIds: children.map((c) => c.id),
-        deleteFn: async () => {
-          await (isQueue ? deleteQueueProject(r.project.id) : deleteDeadlineProject(r.project.id));
-          await deleteTaskNumber(r.project.level1_number);
-        },
-      });
-      if (ok) {
-        openDetailKeys.delete(r.key);
-        await reloadAll();
+    });
+  }
+  const completionInput = wrap.querySelector(".d-completion");
+  if (completionInput) {
+    completionInput.addEventListener("change", async (e) => {
+      await updateTask(t.id, { planned_completion_date: e.target.value });
+      await reloadAll();
+    });
+  }
+  // 锁定后，最终目标交付物/最终计划完成时间要一起订正(页面内小表单，不用alert()弹窗)——
+  // 一旦任务进了某一周的计划，这两项就跟"实际完成时间做效率对比"这个目的绑在一起，改动
+  // 都要求写清楚订正说明。2026-07-14统一任务模型后循环任务也纳入这套机制(此前循环任务
+  // 不受锁定约束)。
+  const amendToggle = wrap.querySelector(".d-amend-toggle");
+  if (amendToggle) {
+    const amendForm = wrap.querySelector(".d-amend-form");
+    const lockedDisplay = wrap.querySelector(".d-locked-display");
+    amendToggle.addEventListener("click", () => {
+      lockedDisplay.hidden = true;
+      amendForm.hidden = false;
+    });
+    wrap.querySelector(".d-amend-cancel").addEventListener("click", () => {
+      amendForm.hidden = true;
+      lockedDisplay.hidden = false;
+    });
+    wrap.querySelector(".d-amend-confirm").addEventListener("click", async () => {
+      const note = wrap.querySelector(".d-amend-note").value.trim();
+      if (!note) {
+        alert("请填写订正说明");
+        return;
       }
-    });
-  } else {
-    // recurring instance
-    const inst = r.item;
-    const template = r.project;
-    wrap.innerHTML = `
-      <div class="inline-form">
-        <label>标题 <input type="text" class="d-title" value="${inst.title ?? ""}" style="min-width:220px" /></label>
-        <label>最终交付物 <input type="text" class="d-deliverable" value="${inst.target_deliverable ?? ""}" style="min-width:200px" /></label>
-        <span>应完成日期：${inst.due_date}（按编号算法自动生成，不可手改）</span>
-      </div>
-      <div class="inline-form" style="margin-top:6px;">
-        <label>实际完成时间 <input type="date" class="d-actual" value="${inst.actual_completion_date ?? ""}" /></label>
-        <span>状态：${SOURCE_STATUS_LABEL[inst.status] ?? inst.status}</span>
-        ${inst.status !== "stopped" ? `<button type="button" class="secondary d-terminate">标记中止</button>` : ""}
-        <button type="button" class="secondary d-delete">删除此实例</button>
-      </div>
-      <div class="inline-form" style="margin-top:6px;border-top:1px dashed #ccc;padding-top:6px;">
-        <strong>所属循环任务设置（会影响这个模板下"生成下一个实例"时的默认命名，不会改已有实例）：</strong>
-        <label>动词前缀 <input type="text" class="p-title-verb" value="${template.title_verb ?? ""}" placeholder="如：制作" style="width:100px" /></label>
-        <label>名词部分(交付物基础名) <input type="text" class="p-title-noun" value="${template.title_noun ?? ""}" placeholder="如：周例会PPT" style="min-width:160px" /></label>
-        <select class="p-module">${moduleOptionsHtml(template.module_id)}</select>
-        <input type="text" class="p-owner" value="${template.owner ?? ""}" placeholder="责任人" />
-        <select class="p-frequency">
-          ${["weekly", "monthly", "custom"].map((f) => `<option value="${f}" ${f === template.frequency ? "selected" : ""}>${f}</option>`).join("")}
-        </select>
-        <select class="p-status">
-          ${["active", "completed", "paused"].map((s) => `<option value="${s}" ${s === template.status ? "selected" : ""}>${s}</option>`).join("")}
-        </select>
-        <button type="button" class="secondary d-delete-template">删除整个循环任务</button>
-      </div>
-    `;
-    wrap.querySelector(".d-title").addEventListener("change", async (e) => {
-      await updateRecurringInstance(inst.id, { title: e.target.value.trim() || null });
-      await reloadAll();
-    });
-    wrap.querySelector(".d-deliverable").addEventListener("change", async (e) => {
-      await updateRecurringInstance(inst.id, { target_deliverable: e.target.value.trim() || null });
-      await reloadAll();
-    });
-    wrap.querySelector(".d-actual").addEventListener("change", async (e) => {
-      await updateRecurringInstance(inst.id, { actual_completion_date: e.target.value || null });
-      await reloadAll();
-    });
-    const terminateBtn = wrap.querySelector(".d-terminate");
-    if (terminateBtn) {
-      terminateBtn.addEventListener("click", async () => {
-        if (!confirm(`确定把实例"${inst.full_number}"标记为中止？不用等总结周期，直接生效。`)) return;
-        await updateRecurringInstance(inst.id, { status: "stopped" });
-        await reloadAll();
+      const newDeliverable = wrap.querySelector(".d-amend-deliverable").value.trim();
+      const newDate = wrap.querySelector(".d-amend-date").value;
+      await updateTask(t.id, {
+        target_deliverable: newDeliverable || null,
+        planned_completion_date: newDate,
+        completion_date_amendment_note: note,
       });
+      await reloadAll();
+    });
+  }
+  wrap.querySelector(".d-actual").addEventListener("change", async (e) => {
+    await updateTask(t.id, { actual_completion_date: e.target.value || null });
+    await reloadAll();
+  });
+  const terminateBtn = wrap.querySelector(".d-terminate");
+  if (terminateBtn) {
+    terminateBtn.addEventListener("click", async () => {
+      if (!confirm(`确定把"${t.title}"标记为中止？不用等总结周期，直接生效。`)) return;
+      await updateTask(t.id, { status: "stopped" });
+      await reloadAll();
+    });
+  }
+  wrap.querySelector(".d-delete").addEventListener("click", async () => {
+    const ok = await confirmAndCascadeDelete({
+      label: `任务"${t.title}"`,
+      taskIds: [t.id],
+      deleteFn: () => deleteTask(t.id),
+    });
+    if (ok) {
+      openDetailKeys.delete(r.key);
+      await reloadAll();
     }
-    wrap.querySelector(".d-delete").addEventListener("click", async () => {
-      const ok = await confirmAndCascadeDelete({
-        label: `实例"${inst.full_number}"`,
-        sourceColumn: "source_recurring_instance_id",
-        sourceIds: [inst.id],
-        deleteFn: () => deleteRecurringInstance(inst.id),
-      });
-      if (ok) {
-        openDetailKeys.delete(r.key);
-        await reloadAll();
-      }
-    });
+  });
+
+  if (isRecurring) {
     const titleVerbInput = wrap.querySelector(".p-title-verb");
     const titleNounInput = wrap.querySelector(".p-title-noun");
     const moduleSelect = wrap.querySelector(".p-module");
@@ -887,28 +743,55 @@ function buildDetailPanel(r, locked) {
     const saveTemplate = async () => {
       const titleVerb = titleVerbInput.value.trim();
       const titleNoun = titleNounInput.value.trim();
-      await updateRecurringTemplate(template.id, {
-        title: titleVerb + titleNoun,
+      await updateProject(p.id, { title: titleVerb + titleNoun, status: statusSelect.value });
+      await updateRecurringSettings(p.id, {
         title_verb: titleVerb,
         title_noun: titleNoun,
         module_id: moduleSelect.value || null,
         owner: ownerInput.value.trim() || null,
         frequency: frequencySelect.value,
-        status: statusSelect.value,
       });
       await reloadAll();
     };
     [titleVerbInput, titleNounInput, moduleSelect, ownerInput, frequencySelect, statusSelect].forEach((el) =>
       el.addEventListener("change", saveTemplate)
     );
-    wrap.querySelector(".d-delete-template").addEventListener("click", async () => {
+    wrap.querySelector(".d-delete-project").addEventListener("click", async () => {
       const ok = await confirmAndCascadeDelete({
-        label: `循环任务"${template.title}"（含其下全部${template.recurring_task_instances.length}个实例，编号${template.level1_number}会被释放可复用）`,
-        sourceColumn: "source_recurring_instance_id",
-        sourceIds: template.recurring_task_instances.map((i) => i.id),
+        label: `循环任务"${p.title}"（含其下全部${p.tasks.length}个实例，编号${p.level1_number}会被释放可复用）`,
+        taskIds: p.tasks.map((i) => i.id),
         deleteFn: async () => {
-          await deleteRecurringTemplate(template.id);
-          await deleteTaskNumber(template.level1_number);
+          await deleteProject(p.id);
+          await deleteTaskNumber(p.level1_number);
+        },
+      });
+      if (ok) {
+        openDetailKeys.delete(r.key);
+        await reloadAll();
+      }
+    });
+  } else {
+    const categoryInput = wrap.querySelector(".p-category");
+    const deadlineInput = wrap.querySelector(".p-deadline");
+    const deliverableInput = wrap.querySelector(".p-deliverable");
+    const statusSelect = wrap.querySelector(".p-status");
+    const saveProject = async () => {
+      await updateProject(p.id, {
+        category: categoryInput.value.trim() || null,
+        deadline_date: deadlineInput.value || null,
+        target_deliverable: deliverableInput.value.trim() || null,
+        status: statusSelect.value,
+      });
+      await reloadAll();
+    };
+    [categoryInput, deadlineInput, deliverableInput, statusSelect].forEach((el) => el.addEventListener("change", saveProject));
+    wrap.querySelector(".d-delete-project").addEventListener("click", async () => {
+      const ok = await confirmAndCascadeDelete({
+        label: `项目"${p.title}"（含其下全部${p.tasks.length}个任务，编号${p.level1_number}会被释放可复用）`,
+        taskIds: p.tasks.map((c) => c.id),
+        deleteFn: async () => {
+          await deleteProject(p.id);
+          await deleteTaskNumber(p.level1_number);
         },
       });
       if (ok) {
@@ -917,24 +800,19 @@ function buildDetailPanel(r, locked) {
       }
     });
   }
+
   return wrap;
 }
 
 // "曾经进入过plan"的锁定状态缓存(2026-07-10性能修复)——只在reloadAll()真正重新拉取过
-// 数据库数据时才通过refreshLockMap()重新计算，renderTaskTable()本身不再发任何请求。
-// 之前的写法是renderTaskTable每次都对每个可能锁定的任务单独查一次(N个任务=N次HTTP往返)，
-// 导致哪怕只是本地展开/收起详情面板这种完全不涉及数据变化的操作也要卡一下等一串请求跑完。
+// 数据库数据时才通过computeLockMap()重新计算，renderTaskTable()本身不再发任何请求。
+// 2026-07-14统一任务模型后lockMap不再需要排除recurring类型(此前循环任务不受锁定约束，
+// 现在统一纳入)，也不再需要分两次查询(顺序队列/截止日期各查一次)，一次listPlannedTaskIds()够了。
 let lockMap = new Map();
 
-// 纯本地计算，不发请求——两个listPlannedSourceIds()查询结果由调用方(reloadAll)负责跟
-// queue/deadline/recurring的查询一起并发发出，这里只做"拿到结果后怎么算lockMap"这一步，
-// 拆开是为了让fetch阶段能合并成一波Promise.all(2026-07-13减少页面卡顿感整体改动的一部分)
-function computeLockMap(plannedQueueIds, plannedMilestoneIds) {
+function computeLockMap(plannedTaskIds) {
   const leafRows = buildDisplayRows().filter((r) => r.kind === "leaf");
-  const lockable = leafRows.filter((r) => r.type !== "recurring");
-  lockMap = new Map(
-    lockable.map((r) => [r.key, (r.type === "queue" ? plannedQueueIds : plannedMilestoneIds).has(r.item.id)])
-  );
+  lockMap = new Map(leafRows.map((r) => [r.key, plannedTaskIds.has(r.item.id)]));
 }
 
 function renderTaskTable() {
@@ -951,16 +829,14 @@ function renderTaskTable() {
     if (r.kind === "level2-header") {
       const tr = document.createElement("tr");
       if (r.editableTitle) {
-        // 二级本身没有title列(有三级子任务时二级不单独成一行)，标题存在
-        // queue_project_task_groups/deadline_milestone_groups里，直接在分组标题行内编辑——
-        // 这样新建时漏填、或者历史遗留没有标题的二级分组，都能在这里直接补上
-        // (2026-07-10用户明确要求有1/2/3级的任务每一级都要有标题)
+        // 二级本身没有title列(有三级子任务时二级不单独成一行)，标题存在task_groups里，
+        // 直接在分组标题行内编辑——这样新建时漏填、或者历史遗留没有标题的二级分组，
+        // 都能在这里直接补上
         tr.innerHTML = `<td colspan="11" style="padding-left:2em;color:#666;">${r.label}
           <input type="text" class="level2-title-input" value="${r.groupTitle}" placeholder="二级标题(必填)" style="width:220px" />
         </td>`;
         tr.querySelector(".level2-title-input").addEventListener("change", async (e) => {
-          const upsertFn = r.type === "queue" ? upsertQueueTaskGroup : upsertMilestoneGroup;
-          await upsertFn(r.project.id, r.level2, e.target.value.trim());
+          await upsertTaskGroup(r.project.id, r.level2, e.target.value.trim());
           await reloadAll();
         });
       } else {
@@ -1010,21 +886,12 @@ function renderTaskTable() {
 
 // ---------------- 加载 ----------------
 
-// queue/deadline/recurring三张主数据表 + lockMap要用的两个锁定状态查询，原来是"先等三张表
-// 那一波、再等lockMap那一波"两波串行，改成一波5个请求一起并发(2026-07-13减少页面卡顿感
-// 整体改动的一部分，这几张表变化频繁不缓存，但至少不用再排队等两轮网络往返)
+// projects表(嵌套tasks/task_groups/recurring_project_settings) + lockMap要用的锁定状态查询，
+// 一波2个请求一起并发(2026-07-14统一任务模型后从"三张主表+两次锁定查询"收缩成这两个)
 async function reloadAll() {
-  const [qp, dp, rt, plannedQueueIds, plannedMilestoneIds] = await Promise.all([
-    listQueueProjects(),
-    listDeadlineProjects(),
-    listRecurringTemplates(),
-    listPlannedSourceIds("source_queue_task_id"),
-    listPlannedSourceIds("source_milestone_id"),
-  ]);
-  queueProjects = qp;
-  deadlineProjects = dp;
-  recurringTemplates = rt;
-  computeLockMap(plannedQueueIds, plannedMilestoneIds);
+  const [ps, plannedTaskIds] = await Promise.all([listProjects(), listPlannedTaskIds()]);
+  projects = ps;
+  computeLockMap(plannedTaskIds);
   renderTaskTable();
   const ownerSelect = document.getElementById("owner-select");
   const prevValue = ownerSelect.value;
@@ -1035,9 +902,7 @@ async function reloadAll() {
 
 async function init() {
   // modules/people/meeting_weeks是这个页面的"配套数据"(新建任务表单要用)，不是主数据，
-  // 用cache-first减少等待感；有缓存就先同步赋值，跟下面queue/deadline/recurring的fresh请求
-  // 一起并发跑，不再是"先等小表、再等大表"两波串行(2026-07-13整体改动，
-  // 见tools/.claude/plans/plan-local-cache-loading-states.md)
+  // 用cache-first减少等待感；有缓存就先同步赋值，跟下面projects的fresh请求一起并发跑。
   const modulesCache = cacheFirst("modules", listModules);
   const peopleCache = cacheFirst("people", listPeople);
   const weeksCache = cacheFirst("meeting_weeks", listMeetingWeeks);
