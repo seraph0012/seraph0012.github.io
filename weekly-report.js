@@ -123,7 +123,7 @@ async function init() {
   allModules = modules;
   allWeeks = weeks.filter((w) => w.is_normal !== false);
 
-  summaryCtrl = mountSummarySection(document.getElementById("summary-root"), { allModules });
+  summaryCtrl = mountSummarySection(document.getElementById("summary-root"), { allModules, allPeople: people });
   planCtrl = mountPlanSection(document.getElementById("plan-root"), { allModules, allPeople: people });
 
   const weekSelect = document.getElementById("week-select");

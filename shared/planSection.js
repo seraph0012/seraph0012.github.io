@@ -89,7 +89,9 @@ const TEMPLATE = `
   </div>
 
   <h3>本周计划（已保存）</h3>
-  <p>"任务1/2/3级"、"最终目标交付物"、"最终计划完成时间"是在对应项目/任务详情页维护的静态字段，这里只读展示，改动请点"编辑任务信息"跳转过去。</p>
+  <p>"任务1/2/3级"、"最终目标交付物"、"最终计划完成时间"是在对应项目/任务详情页维护的静态字段，这里只读展示，改动请点"编辑任务信息"跳转过去。改完下面表格里的字段后点"保存"才会提交（点"锁定本周计划"时也会自动先保存一次，不会漏掉还没点保存的改动）。</p>
+  <button type="button" class="save-plan-btn">保存</button>
+  <p class="save-plan-result status"></p>
   <div class="table-scroll">
   <table>
     <thead>
@@ -243,6 +245,13 @@ export function mountPlanSection(root, { allModules, allPeople }) {
   }
 
   root.querySelector(".lock-btn").addEventListener("click", async () => {
+    // 锁定本身就是"最终确认"动作，点它前先把表格里当前显示的值(不管点没点过"保存")
+    // 落库一遍，避免"改了字段但忘了点保存，一锁定这些改动就跟着旧数据被冲掉"这种情况
+    try {
+      await saveAllPlanRows();
+    } catch {
+      return; // 保存失败，错误已经显示在save-plan-result里，不要继续往下锁
+    }
     const problems = await validatePlanBeforeLock();
     if (problems.length > 0) {
       alert(`本周计划还有内容没填完，暂不能锁定：\n\n${problems.join("\n")}`);
@@ -289,6 +298,14 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     return PRIORITY_OPTIONS.map(
       ([v, l]) => `<option value="${v}" ${v === (selected || "") ? "selected" : ""}>${l}</option>`
     ).join("");
+  }
+  // 2026-07-14用户反馈：责任人应该跟模块一样是下拉列表，不是自由文本框(之前唯一的责任人
+  // 来源是people表，允许自由打字反而更容易打错/不一致)
+  function peopleOptionsHtml(selectedName) {
+    return (
+      `<option value="">(未设置)</option>` +
+      allPeople.map((p) => `<option value="${p.name}" ${p.name === selectedName ? "selected" : ""}>${p.name}</option>`).join("")
+    );
   }
 
   function renderCandidates() {
@@ -377,18 +394,35 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     resultEl.textContent = "写入中...";
     resultEl.className = "add-result status";
     try {
-      for (const { c, row } of toInsert) {
-        await createWeeklyTaskEntry(row);
-        await maybeSetActualStart(c.task_id, c.actualStartDate, week.meeting_date);
-      }
-      resultEl.textContent = `已加入 ${toInsert.length} 条`;
+      // 2026-07-14用户反馈：这些字段的值(交付物/用时/优先级等)已经在候选池表格里了，不需要
+      // 写完之后再整个重新查一遍generateCandidatePool()+loadSavedPlan()才能显示——真正
+      // 必须等的只有createWeeklyTaskEntry本身(需要拿到数据库分配的id)，改成并发写入(不再
+      // 一条条await)，写完直接用已有数据在本地把新行追加进"本周计划"表格、并从候选池数组
+      // 里移除已插入的几条，不用再打两次额外的查询。maybeSetActualStart不影响这里任何
+      // 界面显示，不等它完成(fire-and-forget，失败了下次还有机会自动补)。
+      const created = await Promise.all(
+        toInsert.map(async ({ c, row }) => {
+          const entry = await createWeeklyTaskEntry(row);
+          maybeSetActualStart(c.task_id, c.actualStartDate, week.meeting_date).catch(() => {});
+          return { c, entry };
+        })
+      );
+      resultEl.textContent = `已加入 ${created.length} 条`;
       resultEl.className = "add-result status ok";
-      candidates = await generateCandidatePool(week);
+      const insertedTaskIds = new Set(toInsert.map(({ c }) => c.task_id));
+      candidates = candidates.filter((c) => !insertedTaskIds.has(c.task_id));
       renderCandidates();
-      await loadSavedPlan();
+      const tbody = root.querySelector(".plan-tbody");
+      for (const { c, entry } of created) {
+        tbody.appendChild(buildPlanRowElement(entry, c.detail, isPlanLocked()));
+      }
     } catch (err) {
       resultEl.textContent = `失败：${err.message}`;
       resultEl.className = "add-result status error";
+      // 部分写入部分失败时本地状态可能跟数据库不一致了，稳妥起见老实重新拉一次真实状态
+      candidates = await generateCandidatePool(week);
+      renderCandidates();
+      await loadSavedPlan();
     }
   });
 
@@ -423,7 +457,7 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     try {
       const carryOver = await computeCarryOverSet(previousWeek);
       const soleModuleId = allModules.length === 1 ? allModules[0].id : null;
-      await createWeeklyTaskEntry({
+      const row = {
         meeting_week_id: week.id,
         appears_in: "plan",
         task_id: c.task_id,
@@ -433,12 +467,17 @@ export function mountPlanSection(root, { allModules, allPeople }) {
         deliverable_this_week: c.deliverable_this_week,
         execution_deadline: c.execution_deadline || null,
         resources_needed: "无",
-      });
-      await maybeSetActualStart(c.task_id, c.actualStartDate, week.meeting_date);
+      };
+      const entry = await createWeeklyTaskEntry(row);
+      maybeSetActualStart(c.task_id, c.actualStartDate, week.meeting_date).catch(() => {});
       resultEl.textContent = `已添加：${c.label}（可以在下方表格里继续编辑用时/优先级等字段）`;
       resultEl.className = "manual-add-result status ok";
-      await loadManualCandidates();
-      await loadSavedPlan();
+      // 2026-07-14用户反馈：不用为了刷新界面再整个重新查一遍数据——本地直接从候选数组
+      // 里摘掉这一条、把新行追加进"本周计划"表格就够了，detail直接复用c.detail(候选池
+      // 生成时已经查过一次buildSourceDetailMap，没必要为同一条数据再查一遍)
+      manualCandidates = manualCandidates.filter((x) => x.task_id !== c.task_id);
+      renderManualPicker();
+      root.querySelector(".plan-tbody").appendChild(buildPlanRowElement(entry, c.detail || {}, isPlanLocked()));
     } catch (err) {
       resultEl.textContent = `失败：${err.message}`;
       resultEl.className = "manual-add-result status error";
@@ -446,6 +485,41 @@ export function mountPlanSection(root, { allModules, allPeople }) {
   }
 
   root.querySelector(".refresh-manual-btn").addEventListener("click", loadManualCandidates);
+
+  // 抽成独立函数，供loadSavedPlan()整表渲染和"加入本周计划"/"手动搜索添加"两处乐观本地
+  // 追加行共用(2026-07-14用户反馈：加入候选后不需要重新整个查一遍数据库，页面上已经有
+  // 的信息直接拼出这一行就够了，不然每次点"加入本周计划"都要等好几秒)
+  function buildPlanRowElement(e, detail, locked) {
+    const dis = locked ? "disabled" : "";
+    const tr = document.createElement("tr");
+    tr.dataset.entryId = e.id;
+    tr.innerHTML = `
+      <td class="task-col readonly-col">${detail.level1Text || ""}</td>
+      <td class="task-col readonly-col">${detail.level2Text || ""}</td>
+      <td class="task-col readonly-col">${detail.level3Text || ""}</td>
+      <td class="task-col readonly-col">${detail.targetDeliverable || ""}</td>
+      <td class="readonly-col">${detail.completionDate || ""}</td>
+      <td class="readonly-col">${e.plan_category || ""}</td>
+      <td><select class="f-module" ${dis}>${moduleOptionsHtml(e.module_id)}</select></td>
+      <td><select class="f-owner" ${dis}>${peopleOptionsHtml(e.owner)}</select></td>
+      <td><input type="text" class="f-deliverable" value="${e.deliverable_this_week || ""}" style="width:12em" ${dis} /></td>
+      <td><input type="number" class="f-hours" step="0.5" value="${e.planned_hours ?? ""}" style="width:4em" ${dis} /></td>
+      <td><input type="date" class="f-start" value="${e.plan_start_date || ""}" min="${week.meeting_date}" max="${week.work_week_end || ""}" ${dis} /></td>
+      <td><input type="date" class="f-deadline" value="${e.execution_deadline || ""}" min="${week.meeting_date}" max="${week.work_week_end || ""}" ${dis} /></td>
+      <td><select class="f-priority" ${dis}>${priorityOptionsHtml(e.priority_quadrant)}</select></td>
+      <td><input type="text" class="f-resources" value="${e.resources_needed || "无"}" style="width:8em" ${dis} /></td>
+      <td><input type="checkbox" class="f-highlight" ${e.highlight ? "checked" : ""} ${dis} /></td>
+      <td>${detail.detailUrl ? `<a href="${detail.detailUrl}" target="_blank" rel="noopener">编辑任务信息</a>` : ""}</td>
+      <td><button type="button" class="secondary f-delete" ${dis}>删除</button></td>
+    `;
+    // 2026-07-14用户要求：字段改动不再随change事件即时落库，统一改成点整张表格上方的
+    // "保存"按钮批量提交(saveAllPlanRows())，跟这里的"删除"这类立即生效的破坏性操作分开
+    tr.querySelector(".f-delete").addEventListener("click", async () => {
+      await deleteWeeklyTaskEntry(e.id);
+      tr.remove();
+    });
+    return tr;
+  }
 
   async function loadSavedPlan() {
     if (!week) return;
@@ -456,31 +530,25 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     const tbody = root.querySelector(".plan-tbody");
     tbody.innerHTML = "";
     const locked = isPlanLocked();
-    const dis = locked ? "disabled" : "";
+    root.querySelector(".save-plan-btn").hidden = locked;
     for (const e of entries) {
       const detail = detailMap.get(e.task_id) || {};
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td class="task-col readonly-col">${detail.level1Text || ""}</td>
-        <td class="task-col readonly-col">${detail.level2Text || ""}</td>
-        <td class="task-col readonly-col">${detail.level3Text || ""}</td>
-        <td class="task-col readonly-col">${detail.targetDeliverable || ""}</td>
-        <td class="readonly-col">${detail.completionDate || ""}</td>
-        <td class="readonly-col">${e.plan_category || ""}</td>
-        <td><select class="f-module" ${dis}>${moduleOptionsHtml(e.module_id)}</select></td>
-        <td><input type="text" class="f-owner" value="${e.owner || ""}" style="width:5em" ${dis} /></td>
-        <td><input type="text" class="f-deliverable" value="${e.deliverable_this_week || ""}" style="width:12em" ${dis} /></td>
-        <td><input type="number" class="f-hours" step="0.5" value="${e.planned_hours ?? ""}" style="width:4em" ${dis} /></td>
-        <td><input type="date" class="f-start" value="${e.plan_start_date || ""}" min="${week.meeting_date}" max="${week.work_week_end || ""}" ${dis} /></td>
-        <td><input type="date" class="f-deadline" value="${e.execution_deadline || ""}" min="${week.meeting_date}" max="${week.work_week_end || ""}" ${dis} /></td>
-        <td><select class="f-priority" ${dis}>${priorityOptionsHtml(e.priority_quadrant)}</select></td>
-        <td><input type="text" class="f-resources" value="${e.resources_needed || "无"}" style="width:8em" ${dis} /></td>
-        <td><input type="checkbox" class="f-highlight" ${e.highlight ? "checked" : ""} ${dis} /></td>
-        <td>${detail.detailUrl ? `<a href="${detail.detailUrl}" target="_blank" rel="noopener">编辑任务信息</a>` : ""}</td>
-        <td><button type="button" class="secondary f-delete" ${dis}>删除</button></td>
-      `;
-      const save = async () => {
-        await updateWeeklyTaskEntry(e.id, {
+      tbody.appendChild(buildPlanRowElement(e, detail, locked));
+    }
+  }
+
+  // 遍历当前表格里所有行，把显示的值一次性批量提交——不逐字段自动保存，改成"填完点保存"
+  // 的模式(2026-07-14用户明确要求)。被"锁定本周计划"按钮和独立的"保存"按钮共用。
+  async function saveAllPlanRows() {
+    const resultEl = root.querySelector(".save-plan-result");
+    const rows = [...root.querySelectorAll(".plan-tbody tr[data-entry-id]")];
+    if (rows.length === 0) return;
+    resultEl.textContent = "保存中...";
+    resultEl.className = "save-plan-result status";
+    try {
+      for (const tr of rows) {
+        const entryId = Number(tr.dataset.entryId);
+        await updateWeeklyTaskEntry(entryId, {
           module_id: tr.querySelector(".f-module").value || null,
           owner: tr.querySelector(".f-owner").value || null,
           deliverable_this_week: tr.querySelector(".f-deliverable").value || null,
@@ -491,15 +559,19 @@ export function mountPlanSection(root, { allModules, allPeople }) {
           resources_needed: tr.querySelector(".f-resources").value || "无",
           highlight: tr.querySelector(".f-highlight").checked,
         });
-      };
-      tr.querySelectorAll("select, input").forEach((el) => el.addEventListener("change", save));
-      tr.querySelector(".f-delete").addEventListener("click", async () => {
-        await deleteWeeklyTaskEntry(e.id);
-        await loadSavedPlan();
-      });
-      tbody.appendChild(tr);
+      }
+      resultEl.textContent = `已保存 ${rows.length} 条`;
+      resultEl.className = "save-plan-result status ok";
+    } catch (err) {
+      resultEl.textContent = `保存失败：${err.message}`;
+      resultEl.className = "save-plan-result status error";
+      throw err;
     }
   }
+
+  root.querySelector(".save-plan-btn").addEventListener("click", () => {
+    saveAllPlanRows().catch(() => {});
+  });
 
   async function setWeek(w, prevWeek) {
     week = w;

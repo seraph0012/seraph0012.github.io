@@ -111,11 +111,18 @@ export async function syncTaskStatus(taskId, completionStatus, { isFinal = true 
 // 截止日期(nonsequential)/循环任务(recurring)用自己的最终计划完成时间做默认值，
 // 跟统一之前的行为一致(queue_task始终execution_deadline:null，milestone/recurring
 // 用各自的日期字段)。listAllActiveCandidates(本文件)、planSection.js的候选池生成
-// 都用这个，避免两处各写一份。
+// 都用这个，避免两处各写一份。project_id/project_level1_number/project_title/
+// wbs_level2_number/wbs_level3_number(2026-07-14新增)供taskPicker.js的级联选择器
+// 按1/2/3级编号分组用，不是每个调用方都需要，但挂在这里比另开一个函数简单。
 export function taskCandidateFields(project, task) {
   return {
     task_id: task.id,
+    project_id: project.id,
+    project_level1_number: project.level1_number,
+    project_title: project.title,
     project_type: project.project_type,
+    wbs_level2_number: task.wbs_level2_number,
+    wbs_level3_number: task.wbs_level3_number,
     module_id: task.module_id,
     owner: task.owner,
     deliverable_this_week: task.target_deliverable || "",
@@ -125,9 +132,12 @@ export function taskCandidateFields(project, task) {
 }
 
 // 拉出所有"活跃"（非done/stopped）的顺序队列/截止日期任务 + 目标周的循环任务实例，
-// 附上可搜索的label（"来源类型 [编号] 项目名 / 任务名"）——summarySection"记录计划外完成的
-// 任务"、planSection"手动搜索添加任务"都基于这份全量列表，配合shared/taskPicker.js做本地
-// 按编号/标题过滤，取代旧的"把所有候选塞进一个<select>"写法。
+// 附上可搜索的label（"来源类型 [编号] 项目名 / 任务名"）和结构化详情(detail，跟
+// buildSourceDetailMap单条查询返回的形状一致)——summarySection"记录计划外完成的任务"、
+// planSection"手动搜索添加任务"都基于这份全量列表：label配合shared/taskPicker.js做本地
+// 按编号/标题过滤(取代旧的"把所有候选塞进一个<select>"写法)，detail则是2026-07-14新增，
+// 供选中后直接在本地拼出"本周计划/总结"表格新增行用，不用为了显示这一行再单独查一次
+// buildSourceDetailMap([taskId])。
 // 不按日期过滤：milestone提前完成也应该能被记成"计划外完成"，date-aware的筛选只用在
 // planSection自动候选池那条独立逻辑里（那是"这周该不该主动建议"，语义不同）。
 export async function listAllActiveCandidates(weekId) {
@@ -140,9 +150,11 @@ export async function listAllActiveCandidates(weekId) {
       candidates.push(taskCandidateFields(p, t));
     }
   }
-  const labelMap = await buildLabelMap(candidates.map((c) => c.task_id));
+  const taskIds = candidates.map((c) => c.task_id);
+  const [labelMap, detailMap] = await Promise.all([buildLabelMap(taskIds), buildSourceDetailMap(taskIds)]);
   for (const c of candidates) {
     c.label = `${PROJECT_TYPE_LABEL[c.project_type]} ${labelMap.get(c.task_id) || "(未知任务)"}`;
+    c.detail = detailMap.get(c.task_id) || {};
   }
   return candidates;
 }

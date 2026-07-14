@@ -69,7 +69,9 @@ const TEMPLATE = `
     </div>
 
     <h3>总结条目</h3>
-    <p>"任务1/2/3级"、"最终目标交付物"、"最终完成情况"、"最终计划完成时间"是在对应项目/任务详情页维护的字段，这里只读展示，改动请点"编辑任务信息"跳转过去。"最终完成情况"会在你填写下面的"完成情况"时自动同步过去——但只有当"本周交付材料"文字跟"最终目标交付物"严格一致（去首尾空格）时，才会同步成"已完成"；复杂任务允许跨周分批交付，中途每周标"已完成"只代表这周这部分做完了，"最终完成情况"会继续留在"未完成"，任务会继续出现在下周的候选池/搜索里，等哪周的交付材料终于跟最终目标交付物文字对上，才真正标记为最终完成。</p>
+    <p>"任务1/2/3级"、"最终目标交付物"、"最终完成情况"、"最终计划完成时间"是在对应项目/任务详情页维护的字段，这里只读展示，改动请点"编辑任务信息"跳转过去。"最终完成情况"会在你保存下面的"完成情况"时自动同步过去——但只有当"本周交付材料"文字跟"最终目标交付物"严格一致（去首尾空格）时，才会同步成"已完成"；复杂任务允许跨周分批交付，中途每周标"已完成"只代表这周这部分做完了，"最终完成情况"会继续留在"未完成"，任务会继续出现在下周的候选池/搜索里，等哪周的交付材料终于跟最终目标交付物文字对上，才真正标记为最终完成。改完下面表格里的字段后点"保存"才会提交（点"锁定本周总结"时也会自动先保存一次）。</p>
+    <button type="button" class="save-summary-btn">保存</button>
+    <p class="save-summary-result status"></p>
     <div class="table-scroll">
     <table>
       <thead>
@@ -100,7 +102,7 @@ const TEMPLATE = `
   </div>
 `;
 
-export function mountSummarySection(root, { allModules }) {
+export function mountSummarySection(root, { allModules, allPeople }) {
   root.innerHTML = TEMPLATE;
 
   let week = null;
@@ -112,6 +114,13 @@ export function mountSummarySection(root, { allModules }) {
       allModules
         .map((m) => `<option value="${m.id}" ${m.id === selectedId ? "selected" : ""}>${m.name}</option>`)
         .join("")
+    );
+  }
+  // 2026-07-14用户反馈：责任人应该跟模块一样是下拉列表，不是自由文本框
+  function peopleOptionsHtml(selectedName) {
+    return (
+      `<option value="">(未设置)</option>` +
+      allPeople.map((p) => `<option value="${p.name}" ${p.name === selectedName ? "selected" : ""}>${p.name}</option>`).join("")
     );
   }
   function statusOptionsHtml(selected) {
@@ -170,6 +179,13 @@ export function mountSummarySection(root, { allModules }) {
   }
 
   root.querySelector(".lock-btn").addEventListener("click", async () => {
+    // 锁定是最终确认动作，点它前先把表格里当前显示的值(不管点没点过"保存")落库一遍，
+    // 避免"改了字段但忘了点保存，一锁定这些改动就跟着旧数据被冲掉"
+    try {
+      await saveAllSummaryRows();
+    } catch {
+      return; // 保存失败，错误已经显示在save-summary-result里，不要继续往下锁
+    }
     const problems = await validateSummaryBeforeLock();
     if (problems.length > 0) {
       alert(`本周总结还有内容没填完，暂不能锁定：\n\n${problems.join("\n")}`);
@@ -246,6 +262,56 @@ export function mountSummarySection(root, { allModules }) {
   }
   root.querySelector(".generate-skeleton-btn").addEventListener("click", generateSkeleton);
 
+  // 抽成独立函数，供loadSummary()整表渲染和"记录计划外完成的任务"乐观本地追加行共用
+  // (2026-07-14用户反馈：加入候选后不需要重新整个查一遍数据库，页面上已经有的信息直接
+  // 拼出这一行就够了)
+  function buildSummaryRowElement(e, detail, locked) {
+    const dis = locked ? "disabled" : "";
+    const disReason = dis || e.status !== "未完成" ? "disabled" : "";
+    const tr = document.createElement("tr");
+    tr.dataset.entryId = e.id;
+    tr.dataset.taskId = e.task_id;
+    tr.dataset.targetDeliverable = detail.targetDeliverable || "";
+    tr.innerHTML = `
+      <td class="task-col readonly-col">${detail.level1Text || ""}</td>
+      <td class="task-col readonly-col">${detail.level2Text || ""}</td>
+      <td class="task-col readonly-col">${detail.level3Text || ""}</td>
+      <td class="task-col readonly-col">${detail.targetDeliverable || ""}</td>
+      <td class="readonly-col">${detail.sourceStatus || ""}</td>
+      <td class="readonly-col">${detail.completionDate || ""}</td>
+      <td class="readonly-col">${e.summary_category || ""}</td>
+      <td><select class="f-module" ${dis}>${moduleOptionsHtml(e.module_id)}</select></td>
+      <td><select class="f-owner" ${dis}>${peopleOptionsHtml(e.owner)}</select></td>
+      <td><input type="text" class="f-deliverable" value="${e.deliverable_this_week || ""}" style="width:12em" ${dis} /></td>
+      <td><input type="number" class="f-hours" step="0.5" value="${e.actual_hours ?? ""}" style="width:4em" ${dis} /></td>
+      <td><select class="f-status" ${dis}>${statusOptionsHtml(e.status)}</select></td>
+      <td><input type="text" class="f-reason" value="${e.incomplete_reason || ""}" style="width:10em" ${disReason} /></td>
+      <td><input type="text" class="f-rectify" value="${e.rectification_measures || ""}" style="width:10em" ${disReason} /></td>
+      <td><select class="f-risk" ${disReason}>${riskOptionsHtml(e.risk_level)}</select></td>
+      <td><input type="checkbox" class="f-highlight" ${e.highlight ? "checked" : ""} ${dis} /></td>
+      <td>${detail.detailUrl ? `<a href="${detail.detailUrl}" target="_blank" rel="noopener">编辑任务信息</a>` : ""}</td>
+      <td><button type="button" class="secondary f-delete" ${dis}>删除</button></td>
+    `;
+    // 2026-07-14用户要求：字段改动不再随change事件即时落库，统一改成点整张表格上方的
+    // "保存"按钮批量提交(saveAllSummaryRows())。"完成情况"这个下拉是唯一例外——它变化时
+    // 要马上切换"未完成原因/整改措施/风险"这三个字段是否可编辑(纯本地UI状态，不涉及
+    // 网络请求)，所以单独保留一个change监听，但只做本地disabled切换，不再触发保存/
+    // 整表reload(reload会把其他还没点保存的行的改动一起冲掉)。
+    tr.querySelector(".f-status").addEventListener("change", () => {
+      const isIncomplete = tr.querySelector(".f-status").value === "未完成";
+      const reasonDisabled = !!dis || !isIncomplete;
+      tr.querySelector(".f-reason").disabled = reasonDisabled;
+      tr.querySelector(".f-rectify").disabled = reasonDisabled;
+      tr.querySelector(".f-risk").disabled = reasonDisabled;
+    });
+    tr.querySelector(".f-delete").addEventListener("click", async () => {
+      await deleteWeeklyTaskEntry(e.id);
+      tr.remove();
+      await loadUnplannedCandidates();
+    });
+    return tr;
+  }
+
   async function loadSummary() {
     if (!week) return;
     root.querySelector(".summary-tbody").innerHTML = `<tr><td colspan="18">加载中...</td></tr>`;
@@ -254,36 +320,31 @@ export function mountSummarySection(root, { allModules }) {
 
     const tbody = root.querySelector(".summary-tbody");
     tbody.innerHTML = "";
-    const dis = isSummaryLocked() ? "disabled" : "";
+    const locked = isSummaryLocked();
+    root.querySelector(".save-summary-btn").hidden = locked;
     for (const e of entries) {
       const detail = detailMap.get(e.task_id) || {};
-      const disReason = dis || e.status !== "未完成" ? "disabled" : "";
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td class="task-col readonly-col">${detail.level1Text || ""}</td>
-        <td class="task-col readonly-col">${detail.level2Text || ""}</td>
-        <td class="task-col readonly-col">${detail.level3Text || ""}</td>
-        <td class="task-col readonly-col">${detail.targetDeliverable || ""}</td>
-        <td class="readonly-col">${detail.sourceStatus || ""}</td>
-        <td class="readonly-col">${detail.completionDate || ""}</td>
-        <td class="readonly-col">${e.summary_category || ""}</td>
-        <td><select class="f-module" ${dis}>${moduleOptionsHtml(e.module_id)}</select></td>
-        <td><input type="text" class="f-owner" value="${e.owner || ""}" style="width:5em" ${dis} /></td>
-        <td><input type="text" class="f-deliverable" value="${e.deliverable_this_week || ""}" style="width:12em" ${dis} /></td>
-        <td><input type="number" class="f-hours" step="0.5" value="${e.actual_hours ?? ""}" style="width:4em" ${dis} /></td>
-        <td><select class="f-status" ${dis}>${statusOptionsHtml(e.status)}</select></td>
-        <td><input type="text" class="f-reason" value="${e.incomplete_reason || ""}" style="width:10em" ${disReason} /></td>
-        <td><input type="text" class="f-rectify" value="${e.rectification_measures || ""}" style="width:10em" ${disReason} /></td>
-        <td><select class="f-risk" ${disReason}>${riskOptionsHtml(e.risk_level)}</select></td>
-        <td><input type="checkbox" class="f-highlight" ${e.highlight ? "checked" : ""} ${dis} /></td>
-        <td>${detail.detailUrl ? `<a href="${detail.detailUrl}" target="_blank" rel="noopener">编辑任务信息</a>` : ""}</td>
-        <td><button type="button" class="secondary f-delete" ${dis}>删除</button></td>
-      `;
-      const save = async () => {
+      tbody.appendChild(buildSummaryRowElement(e, detail, locked));
+    }
+  }
+
+  // 遍历当前表格里所有行，把显示的值一次性批量提交——不逐字段自动保存，改成"填完点保存"
+  // 的模式(2026-07-14用户明确要求)。被"锁定本周总结"按钮和独立的"保存"按钮共用。
+  async function saveAllSummaryRows() {
+    const resultEl = root.querySelector(".save-summary-result");
+    const rows = [...root.querySelectorAll(".summary-tbody tr[data-entry-id]")];
+    if (rows.length === 0) return;
+    resultEl.textContent = "保存中...";
+    resultEl.className = "save-summary-result status";
+    try {
+      for (const tr of rows) {
+        const entryId = Number(tr.dataset.entryId);
+        const taskId = Number(tr.dataset.taskId);
+        const targetDeliverable = tr.dataset.targetDeliverable || "";
         const status = tr.querySelector(".f-status").value || null;
         const isIncomplete = status === "未完成";
         const deliverableThisWeek = tr.querySelector(".f-deliverable").value || null;
-        await updateWeeklyTaskEntry(e.id, {
+        await updateWeeklyTaskEntry(entryId, {
           module_id: tr.querySelector(".f-module").value || null,
           owner: tr.querySelector(".f-owner").value || null,
           deliverable_this_week: deliverableThisWeek,
@@ -297,27 +358,22 @@ export function mountSummarySection(root, { allModules }) {
         if (status) {
           // "已完成"不等于任务本身最终完成——本周交付材料要跟最终目标交付物文字严格相等
           // (去首尾空格)才算数，复杂任务允许跨周分批交付，见taskLabels.js的syncTaskStatus注释。
-          const isFinal = !!(
-            detail.targetDeliverable &&
-            deliverableThisWeek &&
-            deliverableThisWeek.trim() === detail.targetDeliverable.trim()
-          );
-          await syncTaskStatus(e.task_id, status, { isFinal });
+          const isFinal = !!(targetDeliverable && deliverableThisWeek && deliverableThisWeek.trim() === targetDeliverable.trim());
+          await syncTaskStatus(taskId, status, { isFinal });
         }
-      };
-      tr.querySelectorAll("select:not(.f-status), input").forEach((el) => el.addEventListener("change", save));
-      tr.querySelector(".f-status").addEventListener("change", async () => {
-        await save();
-        await loadSummary();
-      });
-      tr.querySelector(".f-delete").addEventListener("click", async () => {
-        await deleteWeeklyTaskEntry(e.id);
-        await loadSummary();
-        await loadUnplannedCandidates();
-      });
-      tbody.appendChild(tr);
+      }
+      resultEl.textContent = `已保存 ${rows.length} 条`;
+      resultEl.className = "save-summary-result status ok";
+    } catch (err) {
+      resultEl.textContent = `保存失败：${err.message}`;
+      resultEl.className = "save-summary-result status error";
+      throw err;
     }
   }
+
+  root.querySelector(".save-summary-btn").addEventListener("click", () => {
+    saveAllSummaryRows().catch(() => {});
+  });
 
   function renderUnplannedPicker() {
     renderTaskPicker(root.querySelector(".unplanned-picker"), unplannedCandidates, handleUnplannedPick);
@@ -350,7 +406,7 @@ export function mountSummarySection(root, { allModules }) {
     resultEl.className = "add-unplanned-result status";
     try {
       const soleModuleId = allModules.length === 1 ? allModules[0].id : null;
-      await createWeeklyTaskEntry({
+      const row = {
         meeting_week_id: week.id,
         appears_in: "summary",
         task_id: c.task_id,
@@ -358,11 +414,16 @@ export function mountSummarySection(root, { allModules }) {
         summary_category: "计划外",
         owner: c.owner,
         deliverable_this_week: c.deliverable_this_week,
-      });
+      };
+      const entry = await createWeeklyTaskEntry(row);
       resultEl.textContent = `已添加：${c.label}`;
       resultEl.className = "add-unplanned-result status ok";
-      await loadUnplannedCandidates();
-      await loadSummary();
+      // 2026-07-14用户反馈：不用为了刷新界面再整个重新查一遍数据——本地直接从候选数组里
+      // 摘掉这一条、把新行追加进"总结条目"表格就够了，detail直接复用c.detail(listAllActiveCandidates
+      // 已经查过一次buildSourceDetailMap，没必要为同一条数据再查一遍)
+      unplannedCandidates = unplannedCandidates.filter((x) => x.task_id !== c.task_id);
+      renderUnplannedPicker();
+      root.querySelector(".summary-tbody").appendChild(buildSummaryRowElement(entry, c.detail || {}, isSummaryLocked()));
     } catch (err) {
       resultEl.textContent = `失败：${err.message}`;
       resultEl.className = "add-unplanned-result status error";

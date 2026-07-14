@@ -727,43 +727,47 @@ function buildLeafDetailPanel(node) {
       <label>实际完成时间 <input type="date" class="d-actual" value="${t.actual_completion_date ?? ""}" /></label>
       <span>状态：${SOURCE_STATUS_LABEL[t.status] ?? t.status}</span>
       ${t.status !== "stopped" ? `<button type="button" class="secondary d-terminate">标记中止</button>` : ""}
+      <button type="button" class="d-save">保存</button>
       <button type="button" class="secondary d-delete">删除此任务</button>
+      <span class="d-save-result status"></span>
     </div>
   `;
 
-  wrap.querySelector(".d-title").addEventListener("change", async (e) => {
-    await updateTask(t.id, { title: e.target.value });
-    await reloadAll();
-  });
-  wrap.querySelector(".d-module").addEventListener("change", async (e) => {
-    await updateTask(t.id, { module_id: e.target.value || null });
-    await reloadAll();
-  });
-  wrap.querySelector(".d-owner").addEventListener("change", async (e) => {
-    await updateTask(t.id, { owner: e.target.value || null });
-    await reloadAll();
-  });
-  wrap.querySelector(".d-planned-start").addEventListener("change", async (e) => {
-    await updateTask(t.id, { planned_start_date: e.target.value || null });
-    await reloadAll();
-  });
-  const deliverableInputLoose = wrap.querySelector(".d-deliverable");
-  if (deliverableInputLoose) {
-    deliverableInputLoose.addEventListener("change", async (e) => {
-      await updateTask(t.id, { target_deliverable: e.target.value || null });
+  // 2026-07-14用户明确要求：不管几级任务，字段改动都不该随change事件即时落库，统一改成
+  // 点"保存"按钮一次性批量提交这个面板里的所有字段——标题/模块/责任人/预计开始日期/
+  // 实际完成时间(无论是否锁定都能改)+(未锁定时)最终目标交付物/最终计划完成时间，一个
+  // updateTask()调用搞定。已锁定时最终目标交付物/完成时间走下面单独的"订正"表单，那个
+  // 本来就有自己的"确认订正"按钮，不受这次改动影响。
+  wrap.querySelector(".d-save").addEventListener("click", async () => {
+    const resultEl = wrap.querySelector(".d-save-result");
+    resultEl.textContent = "保存中...";
+    resultEl.className = "d-save-result status";
+    try {
+      const patch = {
+        title: wrap.querySelector(".d-title").value,
+        module_id: wrap.querySelector(".d-module").value || null,
+        owner: wrap.querySelector(".d-owner").value || null,
+        planned_start_date: wrap.querySelector(".d-planned-start").value || null,
+        actual_completion_date: wrap.querySelector(".d-actual").value || null,
+      };
+      const deliverableInput = wrap.querySelector(".d-deliverable");
+      if (deliverableInput) patch.target_deliverable = deliverableInput.value || null;
+      const completionInput = wrap.querySelector(".d-completion");
+      if (completionInput) patch.planned_completion_date = completionInput.value;
+      await updateTask(t.id, patch);
+      resultEl.textContent = "已保存";
+      resultEl.className = "d-save-result status ok";
       await reloadAll();
-    });
-  }
-  const completionInput = wrap.querySelector(".d-completion");
-  if (completionInput) {
-    completionInput.addEventListener("change", async (e) => {
-      await updateTask(t.id, { planned_completion_date: e.target.value });
-      await reloadAll();
-    });
-  }
+    } catch (err) {
+      resultEl.textContent = `保存失败：${err.message}`;
+      resultEl.className = "d-save-result status error";
+    }
+  });
+
   // 锁定后，最终目标交付物/最终计划完成时间要一起订正(页面内小表单，不用alert()弹窗)——
   // 一旦任务进了某一周的计划，这两项就跟"实际完成时间做效率对比"这个目的绑在一起，改动
-  // 都要求写清楚订正说明。循环任务也纳入这套机制(此前循环任务不受锁定约束)。
+  // 都要求写清楚订正说明。循环任务也纳入这套机制(此前循环任务不受锁定约束)。这个流程
+  // 本来就有自己的"确认订正"按钮(点击才提交)，跟这次"加保存按钮"的改动无关，不用改。
   const amendToggle = wrap.querySelector(".d-amend-toggle");
   if (amendToggle) {
     const amendForm = wrap.querySelector(".d-amend-form");
@@ -792,10 +796,6 @@ function buildLeafDetailPanel(node) {
       await reloadAll();
     });
   }
-  wrap.querySelector(".d-actual").addEventListener("change", async (e) => {
-    await updateTask(t.id, { actual_completion_date: e.target.value || null });
-    await reloadAll();
-  });
   const terminateBtn = wrap.querySelector(".d-terminate");
   if (terminateBtn) {
     terminateBtn.addEventListener("click", async () => {
@@ -839,7 +839,9 @@ function buildProjectDetailPanel(node) {
          <select class="p-status">
            ${["active", "completed", "paused"].map((s) => `<option value="${s}" ${s === p.status ? "selected" : ""}>${s}</option>`).join("")}
          </select>
+         <button type="button" class="p-save">保存</button>
          <button type="button" class="secondary d-delete-project">删除整个循环任务</button>
+         <span class="p-save-result status"></span>
        </div>`
     : `<div class="inline-form">
          <label>标题 <input type="text" class="p-title" value="${p.title}" style="min-width:200px" /></label>
@@ -851,9 +853,13 @@ function buildProjectDetailPanel(node) {
            </select>
          </label>
          <label>项目最终交付物 <input type="text" class="p-deliverable" value="${p.target_deliverable ?? ""}" /></label>
+         <button type="button" class="p-save">保存</button>
          <button type="button" class="secondary d-delete-project">删除整个项目</button>
+         <span class="p-save-result status"></span>
        </div>`;
 
+  // 2026-07-14用户明确要求：项目级字段同样不再随change事件即时落库，改成一个"保存"按钮
+  // 一次性批量提交这个面板里的所有字段。
   if (isRecurring) {
     const titleVerbInput = wrap.querySelector(".p-title-verb");
     const titleNounInput = wrap.querySelector(".p-title-noun");
@@ -861,22 +867,29 @@ function buildProjectDetailPanel(node) {
     const ownerInput = wrap.querySelector(".p-owner");
     const frequencySelect = wrap.querySelector(".p-frequency");
     const statusSelect = wrap.querySelector(".p-status");
-    const saveTemplate = async () => {
-      const titleVerb = titleVerbInput.value.trim();
-      const titleNoun = titleNounInput.value.trim();
-      await updateProject(p.id, { title: titleVerb + titleNoun, status: statusSelect.value });
-      await updateRecurringSettings(p.id, {
-        title_verb: titleVerb,
-        title_noun: titleNoun,
-        module_id: moduleSelect.value || null,
-        owner: ownerInput.value.trim() || null,
-        frequency: frequencySelect.value,
-      });
-      await reloadAll();
-    };
-    [titleVerbInput, titleNounInput, moduleSelect, ownerInput, frequencySelect, statusSelect].forEach((el) =>
-      el.addEventListener("change", saveTemplate)
-    );
+    wrap.querySelector(".p-save").addEventListener("click", async () => {
+      const resultEl = wrap.querySelector(".p-save-result");
+      resultEl.textContent = "保存中...";
+      resultEl.className = "p-save-result status";
+      try {
+        const titleVerb = titleVerbInput.value.trim();
+        const titleNoun = titleNounInput.value.trim();
+        await updateProject(p.id, { title: titleVerb + titleNoun, status: statusSelect.value });
+        await updateRecurringSettings(p.id, {
+          title_verb: titleVerb,
+          title_noun: titleNoun,
+          module_id: moduleSelect.value || null,
+          owner: ownerInput.value.trim() || null,
+          frequency: frequencySelect.value,
+        });
+        resultEl.textContent = "已保存";
+        resultEl.className = "p-save-result status ok";
+        await reloadAll();
+      } catch (err) {
+        resultEl.textContent = `保存失败：${err.message}`;
+        resultEl.className = "p-save-result status error";
+      }
+    });
     wrap.querySelector(".d-delete-project").addEventListener("click", async () => {
       const ok = await confirmAndCascadeDelete({
         label: `循环任务"${p.title}"（含其下全部${p.tasks.length}个实例，编号${p.level1_number}会被释放可复用）`,
@@ -898,17 +911,26 @@ function buildProjectDetailPanel(node) {
     const deadlineInput = wrap.querySelector(".p-deadline");
     const deliverableInput = wrap.querySelector(".p-deliverable");
     const statusSelect = wrap.querySelector(".p-status");
-    const saveProject = async () => {
-      await updateProject(p.id, {
-        title: titleInput.value.trim() || p.title,
-        category: categoryInput.value.trim() || null,
-        deadline_date: deadlineInput.value || null,
-        target_deliverable: deliverableInput.value.trim() || null,
-        status: statusSelect.value,
-      });
-      await reloadAll();
-    };
-    [titleInput, categoryInput, deadlineInput, deliverableInput, statusSelect].forEach((el) => el.addEventListener("change", saveProject));
+    wrap.querySelector(".p-save").addEventListener("click", async () => {
+      const resultEl = wrap.querySelector(".p-save-result");
+      resultEl.textContent = "保存中...";
+      resultEl.className = "p-save-result status";
+      try {
+        await updateProject(p.id, {
+          title: titleInput.value.trim() || p.title,
+          category: categoryInput.value.trim() || null,
+          deadline_date: deadlineInput.value || null,
+          target_deliverable: deliverableInput.value.trim() || null,
+          status: statusSelect.value,
+        });
+        resultEl.textContent = "已保存";
+        resultEl.className = "p-save-result status ok";
+        await reloadAll();
+      } catch (err) {
+        resultEl.textContent = `保存失败：${err.message}`;
+        resultEl.className = "p-save-result status error";
+      }
+    });
     wrap.querySelector(".d-delete-project").addEventListener("click", async () => {
       const ok = await confirmAndCascadeDelete({
         label: `项目"${p.title}"（含其下全部${p.tasks.length}个任务，编号${p.level1_number}会被释放可复用）`,
@@ -938,10 +960,24 @@ function buildGroupDetailPanel(node) {
     wrap.innerHTML = `<span>该分组标题按"动词前缀+月份+名词部分"自动生成，不能手改——要改就去上一级"循环任务"项目的详情里改动词前缀/名词部分。</span>`;
     return wrap;
   }
-  wrap.innerHTML = `<label>二级标题(必填) <input type="text" class="g-title" value="${node.groupTitle}" placeholder="如：制作方案" style="min-width:220px" /></label>`;
-  wrap.querySelector(".g-title").addEventListener("change", async (e) => {
-    await upsertTaskGroup(p.id, node.level2, e.target.value.trim());
-    await reloadAll();
+  wrap.innerHTML = `
+    <label>二级标题(必填) <input type="text" class="g-title" value="${node.groupTitle}" placeholder="如：制作方案" style="min-width:220px" /></label>
+    <button type="button" class="g-save">保存</button>
+    <span class="g-save-result status"></span>
+  `;
+  wrap.querySelector(".g-save").addEventListener("click", async () => {
+    const resultEl = wrap.querySelector(".g-save-result");
+    resultEl.textContent = "保存中...";
+    resultEl.className = "g-save-result status";
+    try {
+      await upsertTaskGroup(p.id, node.level2, wrap.querySelector(".g-title").value.trim());
+      resultEl.textContent = "已保存";
+      resultEl.className = "g-save-result status ok";
+      await reloadAll();
+    } catch (err) {
+      resultEl.textContent = `保存失败：${err.message}`;
+      resultEl.className = "g-save-result status error";
+    }
   });
   return wrap;
 }
