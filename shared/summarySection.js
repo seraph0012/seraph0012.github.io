@@ -3,9 +3,6 @@
 // 跟planSection.js的区块共存而不撞id（2026-07-13周报工作流重新设计，见
 // tools/.claude/plans/plan-weekly-report-unified-workflow.md）。
 import {
-  listQueueProjects,
-  listDeadlineProjects,
-  listRecurringInstancesForWeek,
   listWeeklyTaskEntries,
   createWeeklyTaskEntry,
   updateWeeklyTaskEntry,
@@ -13,14 +10,15 @@ import {
   updateMeetingWeekFields,
 } from "./db.js";
 import {
-  SOURCE_LABEL,
   sourceIdOf,
   sourceColumnFor,
   buildLabelMap,
   buildSourceDetailMap,
   syncSourceStatus,
+  listAllActiveCandidates,
 } from "./taskLabels.js";
 import { validateSourceDetail, validateOwnFields } from "./entryValidation.js";
+import { renderTaskPicker } from "./taskPicker.js";
 
 const SUMMARY_REQUIRED_FIELDS = [
   ["module_id", "模块"],
@@ -51,10 +49,11 @@ const TEMPLATE = `
   <p class="no-week-msg status" hidden>没有更早的例会周，跳过"上周总结"。</p>
   <div class="summary-body">
     <div class="lock-bar inline-form">
-      <button type="button" class="generate-skeleton-btn">生成/刷新总结骨架</button>
+      <button type="button" class="generate-skeleton-btn">复制上周计划生成总结</button>
       <button type="button" class="lock-btn">锁定本周总结</button>
       <button type="button" class="unlock-btn secondary" hidden>解锁编辑</button>
     </div>
+    <p>把上周计划里的条目复制过来作为总结的起点，正常一周点一次就够。之后如果又给上周计划补录了新条目，可以再点一次——只会补上还没生成过总结的那些，不会动你已经填好的行。</p>
     <p class="skeleton-result status"></p>
     <p class="lock-status status"></p>
     <form class="unlock-form inline-form" hidden>
@@ -65,12 +64,9 @@ const TEMPLATE = `
 
     <div class="unplanned-block">
       <h3>记录计划外完成的任务</h3>
-      <p>"计划外"就是没出现在本周计划里、但本周确实做了的任务，不用单独登记——从下面选一个已有的顺序队列/截止日期/循环任务即可，"计划内/计划外"会自动判定。如果这个任务压根还没建过，先去<a href="tasks.html" target="_blank" rel="noopener">任务管理</a>新建，回来刷新这里的下拉再选。</p>
-      <form class="add-unplanned-form inline-form">
-        <select class="unplanned-select" style="min-width:320px"></select>
-        <button type="button" class="add-unplanned-btn">添加为计划外</button>
-        <button type="button" class="refresh-unplanned-btn secondary">刷新列表</button>
-      </form>
+      <p>"计划外"就是没出现在本周计划里、但本周确实做了的任务，不用单独登记——搜索一个已有的顺序队列/截止日期/循环任务点击即可添加，"计划内/计划外"会自动判定。如果这个任务压根还没建过，先去<a href="tasks.html" target="_blank" rel="noopener">任务管理</a>新建，回来点"刷新"再搜。</p>
+      <div class="unplanned-picker"></div>
+      <button type="button" class="refresh-unplanned-btn secondary">刷新列表</button>
       <p class="add-unplanned-result status"></p>
     </div>
 
@@ -242,10 +238,10 @@ export function mountSummarySection(root, { allModules }) {
           highlight: p.highlight,
         });
       }
-      resultEl.textContent = toCreate.length === 0 ? "本周计划条目都已生成过总结骨架" : `已生成 ${toCreate.length} 条`;
+      resultEl.textContent = toCreate.length === 0 ? "上周计划条目都已经复制过了" : `已复制 ${toCreate.length} 条`;
       resultEl.className = "skeleton-result status ok";
       await loadSummary();
-      await populateUnplannedOptions();
+      await loadUnplannedCandidates();
     } catch (err) {
       resultEl.textContent = `失败：${err.message}`;
       resultEl.className = "skeleton-result status error";
@@ -317,18 +313,18 @@ export function mountSummarySection(root, { allModules }) {
     }
   }
 
-  async function populateUnplannedOptions() {
-    const sel = root.querySelector(".unplanned-select");
+  function renderUnplannedPicker() {
+    renderTaskPicker(root.querySelector(".unplanned-picker"), unplannedCandidates, handleUnplannedPick);
+  }
+
+  async function loadUnplannedCandidates() {
     if (!week) {
-      sel.innerHTML = "";
       unplannedCandidates = [];
+      renderUnplannedPicker();
       return;
     }
-    sel.innerHTML = `<option value="">加载中...</option>`;
-    const [queueProjects, deadlineProjects, recurringInstances, planEntries, summaryEntries] = await Promise.all([
-      listQueueProjects(),
-      listDeadlineProjects(),
-      listRecurringInstancesForWeek(week.id),
+    const [all, planEntries, summaryEntries] = await Promise.all([
+      listAllActiveCandidates(week.id),
       listWeeklyTaskEntries(week.id, "plan"),
       listWeeklyTaskEntries(week.id, "summary"),
     ]);
@@ -336,67 +332,14 @@ export function mountSummarySection(root, { allModules }) {
       ...planEntries.map((e) => `${e.source_type}:${sourceIdOf(e)}`),
       ...summaryEntries.map((e) => `${e.source_type}:${sourceIdOf(e)}`),
     ]);
-
-    const candidates = [];
-    for (const p of queueProjects) {
-      for (const t of p.queue_project_tasks) {
-        if (t.status === "done" || t.status === "skipped") continue;
-        if (excluded.has(`queue_task:${t.id}`)) continue;
-        candidates.push({
-          source_type: "queue_task",
-          source_id: t.id,
-          module_id: t.module_id,
-          owner: t.owner,
-          deliverable_this_week: t.target_deliverable || "",
-        });
-      }
-    }
-    for (const p of deadlineProjects) {
-      for (const m of p.deadline_milestones) {
-        if (m.status === "done" || m.status === "stopped") continue;
-        if (excluded.has(`milestone:${m.id}`)) continue;
-        candidates.push({
-          source_type: "milestone",
-          source_id: m.id,
-          module_id: m.module_id,
-          owner: m.owner,
-          deliverable_this_week: m.target_deliverable || "",
-        });
-      }
-    }
-    for (const inst of recurringInstances) {
-      if (excluded.has(`recurring_instance:${inst.id}`)) continue;
-      candidates.push({
-        source_type: "recurring_instance",
-        source_id: inst.id,
-        module_id: inst.recurring_task_templates.module_id,
-        owner: inst.recurring_task_templates.owner,
-        deliverable_this_week: inst.target_deliverable || "",
-      });
-    }
-
-    const labelMap = await buildLabelMap(candidates.map((c) => ({ source_type: c.source_type, source_id: c.source_id })));
-    for (const c of candidates) {
-      c.label = labelMap.get(`${c.source_type}:${c.source_id}`) || "(未知任务)";
-    }
-    unplannedCandidates = candidates;
-    sel.innerHTML =
-      candidates.length === 0
-        ? `<option value="">(没有可选的任务——都已在本周计划/总结里，或者还没建过)</option>`
-        : candidates.map((c, i) => `<option value="${i}">${SOURCE_LABEL[c.source_type]} ${c.label}</option>`).join("");
+    unplannedCandidates = all.filter((c) => !excluded.has(`${c.source_type}:${c.source_id}`));
+    renderUnplannedPicker();
   }
 
-  root.querySelector(".add-unplanned-btn").addEventListener("click", async () => {
+  async function handleUnplannedPick(c) {
     const resultEl = root.querySelector(".add-unplanned-result");
     if (isSummaryLocked()) {
       resultEl.textContent = "本周总结已锁定，请先解锁再添加";
-      resultEl.className = "add-unplanned-result status warn";
-      return;
-    }
-    const idx = Number(root.querySelector(".unplanned-select").value);
-    const c = unplannedCandidates[idx];
-    if (!c) {
-      resultEl.textContent = "请先选择一个任务";
       resultEl.className = "add-unplanned-result status warn";
       return;
     }
@@ -414,16 +357,17 @@ export function mountSummarySection(root, { allModules }) {
         owner: c.owner,
         deliverable_this_week: c.deliverable_this_week,
       });
-      resultEl.textContent = "已添加";
+      resultEl.textContent = `已添加：${c.label}`;
       resultEl.className = "add-unplanned-result status ok";
-      await populateUnplannedOptions();
+      await loadUnplannedCandidates();
       await loadSummary();
     } catch (err) {
       resultEl.textContent = `失败：${err.message}`;
       resultEl.className = "add-unplanned-result status error";
     }
-  });
-  root.querySelector(".refresh-unplanned-btn").addEventListener("click", populateUnplannedOptions);
+  }
+
+  root.querySelector(".refresh-unplanned-btn").addEventListener("click", loadUnplannedCandidates);
 
   async function setWeek(w) {
     week = w;
@@ -438,7 +382,7 @@ export function mountSummarySection(root, { allModules }) {
     body.hidden = false;
     renderLockUI();
     await loadSummary();
-    await populateUnplannedOptions();
+    await loadUnplannedCandidates();
   }
 
   return { setWeek };

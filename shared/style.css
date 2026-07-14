@@ -1,3 +1,8 @@
+/* 必须放在最前面：像form.inline-form{display:flex}这类按class设display的规则，
+   优先级会盖过[hidden]属性自带的UA样式(display:none)，导致hidden=true的元素照样显示出来
+   (2026-07-14发现的真实bug——总结区块的"确认订正"表单在未锁定状态下也一直显示)。*/
+[hidden] { display: none !important; }
+
 body {
   font-family: system-ui, -apple-system, "Microsoft YaHei", sans-serif;
   max-width: 960px;
@@ -87,6 +92,11 @@ button:hover { opacity: 0.85; }
 .badge.risk-green { background: #e6f4ea; color: #1e7e34; }
 .badge.risk-yellow { background: #fff8e1; color: #8a6d00; }
 .badge.risk-red { background: #fdecea; color: #b3261e; }
+
+.picker-results ul { list-style: none; padding: 0; margin: 4px 0 0; max-height: 240px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; }
+.picker-results li { padding: 6px 10px; cursor: pointer; border-bottom: 1px solid #eee; }
+.picker-results li:last-child { border-bottom: none; }
+.picker-results li:hover { background: #f5f5f5; }
 
 .login-gate {
   max-width: 360px;

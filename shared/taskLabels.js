@@ -4,6 +4,9 @@ import {
   listQueueProjectTasksByIds,
   listMilestonesByIds,
   listRecurringInstancesByIds,
+  listQueueProjects,
+  listDeadlineProjects,
+  listRecurringInstancesForWeek,
   updateQueueProjectTask,
   updateMilestone,
   updateRecurringInstance,
@@ -159,6 +162,62 @@ const SOURCE_STATUS_FOR_COMPLETION = {
   milestone: { 已完成: "done", 未完成: "in_progress", 中止: "stopped", 未启动: "not_started" },
   recurring_instance: { 已完成: "done", 未完成: "in_progress", 中止: "stopped", 未启动: "not_started" },
 };
+
+// 拉出所有"活跃"（非done/skipped/stopped）的顺序队列任务/截止日期里程碑 + 目标周的循环任务实例，
+// 附上可搜索的label（"来源类型 [编号] 项目名 / 任务名"）——summarySection"记录计划外完成的任务"、
+// planSection"手动搜索添加任务"都基于这份全量列表，配合shared/taskPicker.js做本地按编号/标题
+// 过滤，取代旧的"把所有候选塞进一个<select>"写法（2026-07-14，任务多了下拉会长到没法用）。
+// 不按日期过滤：milestone提前完成也应该能被记成"计划外完成"，date-aware的筛选只用在
+// planSection自动候选池那条独立逻辑里（那是"这周该不该主动建议"，语义不同）。
+export async function listAllActiveCandidates(weekId) {
+  const [queueProjects, deadlineProjects, recurringInstances] = await Promise.all([
+    listQueueProjects(),
+    listDeadlineProjects(),
+    listRecurringInstancesForWeek(weekId),
+  ]);
+  const candidates = [];
+  for (const p of queueProjects) {
+    for (const t of p.queue_project_tasks) {
+      if (t.status === "done" || t.status === "skipped") continue;
+      candidates.push({
+        source_type: "queue_task",
+        source_id: t.id,
+        module_id: t.module_id,
+        owner: t.owner,
+        deliverable_this_week: t.target_deliverable || "",
+        execution_deadline: null,
+      });
+    }
+  }
+  for (const p of deadlineProjects) {
+    for (const m of p.deadline_milestones) {
+      if (m.status === "done" || m.status === "stopped") continue;
+      candidates.push({
+        source_type: "milestone",
+        source_id: m.id,
+        module_id: m.module_id,
+        owner: m.owner,
+        deliverable_this_week: m.target_deliverable || "",
+        execution_deadline: m.planned_date,
+      });
+    }
+  }
+  for (const inst of recurringInstances) {
+    candidates.push({
+      source_type: "recurring_instance",
+      source_id: inst.id,
+      module_id: inst.recurring_task_templates.module_id,
+      owner: inst.recurring_task_templates.owner,
+      deliverable_this_week: inst.target_deliverable || "",
+      execution_deadline: inst.due_date,
+    });
+  }
+  const labelMap = await buildLabelMap(candidates.map((c) => ({ source_type: c.source_type, source_id: c.source_id })));
+  for (const c of candidates) {
+    c.label = `${SOURCE_LABEL[c.source_type]} ${labelMap.get(`${c.source_type}:${c.source_id}`) || "(未知任务)"}`;
+  }
+  return candidates;
+}
 
 export async function syncSourceStatus(sourceType, sourceId, completionStatus) {
   const target = SOURCE_STATUS_FOR_COMPLETION[sourceType]?.[completionStatus];

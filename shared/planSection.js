@@ -10,9 +10,17 @@ import {
   deleteWeeklyTaskEntry,
   updateMeetingWeekFields,
 } from "./db.js";
-import { SOURCE_LABEL, sourceIdOf, sourceColumnFor, buildLabelMap, buildSourceDetailMap } from "./taskLabels.js";
+import {
+  SOURCE_LABEL,
+  sourceIdOf,
+  sourceColumnFor,
+  buildLabelMap,
+  buildSourceDetailMap,
+  listAllActiveCandidates,
+} from "./taskLabels.js";
 import { dateWithWeekday } from "./dateUtils.js";
 import { validateSourceDetail, validateOwnFields } from "./entryValidation.js";
+import { renderTaskPicker } from "./taskPicker.js";
 
 const PLAN_REQUIRED_FIELDS = [
   ["module_id", "模块"],
@@ -74,6 +82,14 @@ const TEMPLATE = `
     <p class="add-result status"></p>
   </div>
 
+  <div class="manual-add-block">
+    <h3>手动搜索添加任务</h3>
+    <p>候选池是按规则自动推荐的，可能有遗漏——按编号/标题搜索后点击即可直接加入本周计划（默认归类"本周新增"，加入后可以在下面表格里改）。</p>
+    <div class="manual-picker"></div>
+    <button type="button" class="refresh-manual-btn secondary">刷新列表</button>
+    <p class="manual-add-result status"></p>
+  </div>
+
   <h3>本周计划（已保存）</h3>
   <p>"任务1/2/3级"、"最终目标交付物"、"最终计划完成时间"是在对应项目/任务详情页维护的静态字段，这里只读展示，改动请点"编辑任务信息"跳转过去。</p>
   <div class="table-scroll">
@@ -110,6 +126,7 @@ export function mountPlanSection(root, { allModules, allPeople }) {
   let week = null;
   let previousWeek = null;
   let candidates = [];
+  let manualCandidates = [];
 
   function currentQueueTask(project) {
     const sorted = [...project.queue_project_tasks].sort((a, b) => {
@@ -391,6 +408,61 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     }
   });
 
+  function renderManualPicker() {
+    renderTaskPicker(root.querySelector(".manual-picker"), manualCandidates, handleManualPick);
+  }
+
+  async function loadManualCandidates() {
+    if (!week) {
+      manualCandidates = [];
+      renderManualPicker();
+      return;
+    }
+    const [all, planEntries] = await Promise.all([
+      listAllActiveCandidates(week.id),
+      listWeeklyTaskEntries(week.id, "plan"),
+    ]);
+    const excluded = new Set(planEntries.map((e) => `${e.source_type}:${sourceIdOf(e)}`));
+    manualCandidates = all.filter((c) => !excluded.has(`${c.source_type}:${c.source_id}`));
+    renderManualPicker();
+  }
+
+  async function handleManualPick(c) {
+    const resultEl = root.querySelector(".manual-add-result");
+    if (isPlanLocked()) {
+      resultEl.textContent = "本周计划已锁定，请先解锁再添加";
+      resultEl.className = "manual-add-result status warn";
+      return;
+    }
+    resultEl.textContent = "添加中...";
+    resultEl.className = "manual-add-result status";
+    try {
+      const carryOver = await computeCarryOverSet(previousWeek);
+      const soleModuleId = allModules.length === 1 ? allModules[0].id : null;
+      await createWeeklyTaskEntry({
+        meeting_week_id: week.id,
+        appears_in: "plan",
+        source_type: c.source_type,
+        [sourceColumnFor(c.source_type)]: c.source_id,
+        module_id: c.module_id ?? soleModuleId,
+        plan_category: carryOver.has(`${c.source_type}:${c.source_id}`) ? "上周未完成" : "本周新增",
+        owner: c.owner || (allPeople.length === 1 ? allPeople[0].name : null),
+        deliverable_this_week: c.deliverable_this_week,
+        execution_deadline: c.execution_deadline || null,
+        resources_needed: "无",
+      });
+      resultEl.textContent = `已添加：${c.label}（可以在下方表格里继续编辑用时/优先级等字段）`;
+      resultEl.className = "manual-add-result status ok";
+      await loadManualCandidates();
+      await loadSavedPlan();
+    } catch (err) {
+      resultEl.textContent = `失败：${err.message}`;
+      resultEl.className = "manual-add-result status error";
+    }
+  }
+
+  root.querySelector(".refresh-manual-btn").addEventListener("click", loadManualCandidates);
+
   async function loadSavedPlan() {
     if (!week) return;
     root.querySelector(".plan-tbody").innerHTML = `<tr><td colspan="17">加载中...</td></tr>`;
@@ -453,7 +525,7 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     renderCandidates();
     renderLockUI();
     renderWeekRangeHint();
-    await loadSavedPlan();
+    await Promise.all([loadSavedPlan(), loadManualCandidates()]);
   }
 
   return { setWeek };
