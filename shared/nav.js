@@ -4,6 +4,7 @@ const LINKS = [
   { href: "index.html", label: "首页" },
   { href: "weekly-report.html", label: "制作周报" },
   { href: "tasks.html", label: "任务管理" },
+  { href: "bulk-import.html", label: "批量导入" },
   { href: "meeting-weeks.html", label: "例会日历" },
   { href: "modules.html", label: "模块管理" },
   { href: "people.html", label: "责任人管理" },

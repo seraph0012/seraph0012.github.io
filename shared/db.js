@@ -68,6 +68,26 @@ export const setTaskNumberOwner = (level1Number, owningId) =>
     .update({ owning_id: owningId })
     .eq("level1_number", level1Number)
     .then(unwrap);
+// "编号"如果被显式传入(level1_number)，通常是调用方刚用suggestNextTaskNumber()算出来的
+// 建议值——但这中间存在check-then-act竞态：建议值算出到真正insert之间，这个号可能已经被
+// 别的插入抢注了，届时会撞task_number_registry的主键唯一约束。这里包一层重试：撞到这个
+// 特定冲突就自动重新取一次suggestNextTaskNumber()再插入(最多5次)。onRetry(newNumber)可选，
+// 每次重试成功拿到新建议号时调用，供调用方同步UI(比如tasks.js的"编号"输入框)——2026-07-14
+// 从tasks.js内部私有函数挪到这里导出，供bulk-import.js批量导入时复用同一套重试逻辑，不用
+// 各自实现一份。
+export async function claimTaskNumberSafe(params, onRetry) {
+  let level1Number = params.level1_number;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      return await claimTaskNumber({ ...params, level1_number: level1Number });
+    } catch (err) {
+      const isConflict = /task_number_registry_pkey/.test(err.message || "") || err.code === "23505";
+      if (!isConflict || attempt === 4) throw err;
+      level1Number = await suggestNextTaskNumber();
+      if (onRetry) onRetry(level1Number);
+    }
+  }
+}
 // 2026-07-10用户明确要求：删除整个项目/模板时编号要真正释放、可以复用，不是"永久占用"。
 // 硬删除registry行(而不是只标记retired_at)——调用方必须先删掉引用这个level1_number的
 // 项目行(projects.level1_number 列是FK，项目行还在的话这里会被约束挡住，顺序不能反)。

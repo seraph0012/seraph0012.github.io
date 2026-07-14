@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>周报自动化系统 — 批量导入</title>
+  <link rel="stylesheet" href="./shared/style.css" />
+</head>
+<body class="wide-page">
+  <nav id="app-nav"></nav>
+
+  <h1>批量导入</h1>
+  <p>用一份Excel（.xlsx）批量新建当前实际在跟进的项目/任务，跑起来"制作周报"的核心流程，不用在"任务管理"页面一条条手动新建。
+  只导入项目(顺序队列/截止日期两种类型)和它们下面的任务的静态结构信息，<strong>不导入循环任务</strong>（数量很少，直接去"任务管理"页面建更快）、
+  <strong>也不导入任何一周的历史计划/总结记录</strong>（那是以后自动化历史数据导入要做的事）。
+  导入前请先确认"模块管理"/"责任人管理"两个页面里已经建好了Excel里会用到的模块名/责任人姓名。</p>
+
+  <section>
+    <h2>第一步：下载模板</h2>
+    <p>模板包含"项目"/"任务"两个sheet，各带一行示例数据和列名说明，照着填即可。</p>
+    <button type="button" id="download-template-btn">下载空白模板</button>
+  </section>
+
+  <section>
+    <h2>第二步：上传并校验</h2>
+    <input type="file" id="file-input" accept=".xlsx" />
+    <p id="parse-status" class="status"></p>
+    <div id="validation-errors"></div>
+  </section>
+
+  <section id="preview-section" hidden>
+    <h2>第三步：预览</h2>
+    <p id="preview-summary"></p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>项目编号</th><th>类型</th><th>项目标题</th><th>动作</th></tr>
+        </thead>
+        <tbody id="preview-projects-tbody"></tbody>
+      </table>
+    </div>
+    <div class="table-scroll" style="margin-top:12px">
+      <table>
+        <thead>
+          <tr><th>项目编号</th><th>二级</th><th>三级</th><th>任务标题</th><th>模块</th><th>责任人</th><th>最终交付物</th><th>最终计划完成时间</th></tr>
+        </thead>
+        <tbody id="preview-tasks-tbody"></tbody>
+      </table>
+    </div>
+    <button type="button" id="import-btn" style="margin-top:12px">开始导入</button>
+  </section>
+
+  <section id="result-section" hidden>
+    <h2>导入结果</h2>
+    <p id="import-summary" class="status"></p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>类型</th><th>内容</th><th>结果</th></tr>
+        </thead>
+        <tbody id="result-tbody"></tbody>
+      </table>
+    </div>
+    <p class="status warn">任务导入不做重复检测——如果需要重新上传同一份Excel修正失败的行，请先把已经成功导入的行从Excel里删掉，只保留失败的那些，避免产生重复任务。</p>
+  </section>
+
+  <script type="module" src="./bulk-import.js"></script>
+</body>
+</html>
