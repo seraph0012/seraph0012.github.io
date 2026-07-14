@@ -517,7 +517,15 @@ document.getElementById("create-form").addEventListener("submit", async (e) => {
   }
 });
 
-// ---------------- 合并任务表(按项目分组、项目下按二级分组) ----------------
+// ---------------- 任务树(1级项目 -> 2级分组 -> 3级任务，默认全部折叠) ----------------
+//
+// 2026-07-14用户反馈重新设计：原来的"合并表格"把每一行都拍平成完整WBS编号("5.1.1")展示，
+// 且二级分组标题是表格里唯一一个不用"详情"就能直接编辑的输入框(不统一、也没有确认动作，
+// 容易让人以为它没作用)。改成真正的树状结构——默认全部折叠只显示1级项目，逐级点开才看到
+// 下一层，每一级只显示"这一级自己的编号"(不是完整路径)；完整WBS编号只在weekly-report/PPT
+// 里用得到，那边走的是taskLabels.js自己的一套编号拼接逻辑，跟这里无关，不受影响。
+// 标题编辑统一成"点详情展开后编辑"，1/2/3级用同一套模式——这也顺带补上了一个真实缺口：
+// 项目(1级)自己的标题此前完全没有编辑入口，现在跟其他字段一起在项目的"详情"里能改了。
 
 // direct: level2为空的那一条(项目本身就是任务)，最多1条；level2Groups: 按二级编号分组、
 // 组内按三级编号排好序——一个二级分组如果只有1条且没有三级编号，说明这个二级本身就是
@@ -543,17 +551,18 @@ function moduleNameFor(moduleId) {
   return allModules.find((m) => m.id === moduleId)?.name ?? "";
 }
 
-// 2026-07-14统一任务模型后，module_id/owner/planned_completion_date/actual_completion_date
-// 在三种project_type下都是同一批列名，不再需要按类型分支特判
-function makeLeafRow(project, item, number) {
+const EMPTY_LEAF_FIELDS = { moduleName: "", owner: "", deliverable: "", completionDate: "", actualDate: "", status: "" };
+
+// 叶子节点(kind:"leaf")不管处在树的哪一层(项目本身就是任务/二级本身是叶子/三级/循环实例)，
+// 内容形状完全一样——module_id/owner/planned_completion_date/actual_completion_date在
+// 三种project_type下都是同一批列名，不再需要按类型或按层级特判
+function makeLeafNode(project, item, localNumber, typeLabel = "") {
   return {
     kind: "leaf",
     key: `task:${item.id}`,
-    type: project.project_type,
-    typeLabel: PROJECT_TYPE_LABEL[project.project_type],
-    number,
-    projectName: project.title,
+    localNumber,
     title: item.title,
+    typeLabel,
     moduleName: moduleNameFor(item.module_id),
     owner: item.owner ?? "",
     deliverable: item.target_deliverable,
@@ -562,75 +571,130 @@ function makeLeafRow(project, item, number) {
     status: SOURCE_STATUS_LABEL[item.status] ?? item.status,
     project,
     item,
+    children: [],
   };
 }
 
-function buildDisplayRows() {
-  const displayRows = [];
+function makeContainerNode(kind, key, localNumber, title, typeLabel, project, children, extra = {}) {
+  return { kind, key, localNumber, title, typeLabel, ...EMPTY_LEAF_FIELDS, project, children, ...extra };
+}
+
+function level2NodeForTaskList(p, g) {
+  if (g.items.length === 1 && g.items[0].wbs_level3_number == null) {
+    return makeLeafNode(p, g.items[0], `${g.level2}`);
+  }
+  const groupTitle = (p.task_groups || []).find((x) => x.wbs_level2_number === g.level2)?.title || "";
+  const children = g.items.map((item) => makeLeafNode(p, item, `${item.wbs_level3_number}`));
+  return makeContainerNode("group", `group:${p.id}:${g.level2}`, `${g.level2}`, groupTitle || "(未命名，点详情补充)", "", p, children, {
+    level2: g.level2,
+    groupTitle,
+  });
+}
+
+function level2NodeForRecurring(p, g) {
+  if (g.items.length === 1 && g.items[0].wbs_level3_number == null) {
+    return makeLeafNode(p, g.items[0], `${g.level2}`);
+  }
+  const s = p.recurring_project_settings;
+  const groupMonth = Number(g.items[0].planned_completion_date.slice(5, 7));
+  const children = g.items.map((item) => makeLeafNode(p, item, `${item.wbs_level3_number}`));
+  return makeContainerNode(
+    "group",
+    `group:${p.id}:${g.level2}`,
+    `${g.level2}`,
+    `${s.title_verb}${groupMonth}月${s.title_noun}`,
+    "",
+    p,
+    children,
+    { level2: g.level2 }
+  );
+}
+
+// 只有project_headers缓存(id/level1_number/title/project_type/status，没有嵌套tasks)时，
+// 1级项目行本身其实已经够画出来了——树默认全折叠，首屏本来就只需要显示到1级。做成一个
+// 禁用交互的占位节点(没有可点的展开箭头/详情按钮，只显示"…"/"加载中")，等listProjects()
+// 真实数据到达后buildTree()会用完整数据重新渲染，占位状态自动被替换掉。
+function makeLoadingProjectNode(p) {
+  return {
+    kind: "project",
+    key: `project:${p.id}`,
+    localNumber: `${p.level1_number}`,
+    title: p.title,
+    typeLabel: p.project_type === "recurring" ? "循环任务" : PROJECT_TYPE_LABEL[p.project_type],
+    ...EMPTY_LEAF_FIELDS,
+    project: p,
+    children: [],
+    loading: true,
+  };
+}
+
+function buildTree() {
+  const roots = [];
 
   for (const p of projects) {
     if (p.project_type === "recurring") continue;
+    if (p.tasks == null) {
+      roots.push(makeLoadingProjectNode(p));
+      continue;
+    }
     const { direct, level2Groups } = groupChildren(p.tasks);
     if (!direct && level2Groups.length === 0) continue; // 空项目(还没建任何任务)暂不展示
-    displayRows.push({ kind: "project-header", label: `[${p.level1_number}] ${p.title}`, typeLabel: PROJECT_TYPE_LABEL[p.project_type] });
-    if (direct) displayRows.push(makeLeafRow(p, direct, wbsLabel(p.level1_number, null, null)));
-    for (const g of level2Groups) {
-      if (g.items.length === 1 && g.items[0].wbs_level3_number == null) {
-        displayRows.push(makeLeafRow(p, g.items[0], wbsLabel(p.level1_number, g.level2, null)));
-      } else {
-        const groupTitle = (p.task_groups || []).find((x) => x.wbs_level2_number === g.level2)?.title || "";
-        displayRows.push({
-          kind: "level2-header",
-          label: `${p.level1_number}.${g.level2}`,
-          editableTitle: true,
-          project: p,
-          level2: g.level2,
-          groupTitle,
-        });
-        for (const t of g.items) {
-          displayRows.push(makeLeafRow(p, t, wbsLabel(p.level1_number, g.level2, t.wbs_level3_number)));
-        }
-      }
+    if (direct && level2Groups.length === 0) {
+      // 项目本身就是任务：1级节点自己就是叶子，没有下一层可展开
+      roots.push(makeLeafNode(p, direct, `${p.level1_number}`, PROJECT_TYPE_LABEL[p.project_type]));
+    } else {
+      const children = level2Groups.map((g) => level2NodeForTaskList(p, g));
+      roots.push(makeContainerNode("project", `project:${p.id}`, `${p.level1_number}`, p.title, PROJECT_TYPE_LABEL[p.project_type], p, children));
     }
   }
 
   for (const p of projects) {
     if (p.project_type !== "recurring") continue;
+    if (p.tasks == null) {
+      roots.push(makeLoadingProjectNode(p));
+      continue;
+    }
     if (p.tasks.length === 0) continue;
-    displayRows.push({ kind: "project-header", label: `[${p.level1_number}] ${p.title}`, typeLabel: "循环任务" });
-    const byLevel2 = new Map();
-    for (const inst of p.tasks) {
-      if (!byLevel2.has(inst.wbs_level2_number)) byLevel2.set(inst.wbs_level2_number, []);
-      byLevel2.get(inst.wbs_level2_number).push(inst);
-    }
-    const groups = [...byLevel2.entries()].sort((a, b) => a[0] - b[0]);
-    const s = p.recurring_project_settings;
-    for (const [level2, items] of groups) {
-      const sortedItems = items.sort((a, b) => (a.wbs_level3_number ?? 0) - (b.wbs_level3_number ?? 0));
-      if (sortedItems.length === 1 && sortedItems[0].wbs_level3_number == null) {
-        displayRows.push(makeLeafRow(p, sortedItems[0], wbsLabel(p.level1_number, level2, null)));
-      } else {
-        // 2级分组标题也按月份现算(如"制作7月周例会PPT")，不只是干巴巴的编号——
-        // 取组内第一个实例的planned_completion_date所在月份，同一个level2分组下的实例
-        // 本来就都在同一个月
-        const groupMonth = Number(sortedItems[0].planned_completion_date.slice(5, 7));
-        const groupLabel = `${p.level1_number}.${level2} ${s.title_verb}${groupMonth}月${s.title_noun}`;
-        displayRows.push({ kind: "level2-header", label: groupLabel });
-        for (const inst of sortedItems) {
-          displayRows.push(makeLeafRow(p, inst, wbsLabel(p.level1_number, level2, inst.wbs_level3_number)));
-        }
-      }
-    }
+    const { level2Groups } = groupChildren(p.tasks); // 循环任务实例的wbs_level2_number恒非空，不会有direct
+    const children = level2Groups.map((g) => level2NodeForRecurring(p, g));
+    roots.push(makeContainerNode("project", `project:${p.id}`, `${p.level1_number}`, p.title, "循环任务", p, children));
   }
 
-  return displayRows;
+  return roots;
 }
 
-function buildDetailPanel(r, locked) {
+// highlightKey(来自weekly-report.js"编辑任务信息"跳转链接)指向的可能是被折叠祖先节点
+// 挡住的深层叶子——渲染前先把它的整条祖先路径展开，否则默认全折叠状态下这一行根本不会
+// 出现在DOM里，scrollIntoView也无从谈起
+function expandAncestorsFor(tree, targetKey, openSet, ancestors = []) {
+  for (const node of tree) {
+    if (node.key === targetKey) {
+      ancestors.forEach((k) => openSet.add(k));
+      return true;
+    }
+    if (node.children.length > 0 && expandAncestorsFor(node.children, targetKey, openSet, [...ancestors, node.key])) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function collectLeafNodes(tree) {
+  const out = [];
+  for (const node of tree) {
+    if (node.kind === "leaf") out.push(node);
+    else out.push(...collectLeafNodes(node.children));
+  }
+  return out;
+}
+
+// 叶子节点的"详情"：标题/模块/责任人/预计开始日期/最终目标交付物/最终计划完成时间(含锁定
+// 订正)/实际完成时间/状态/中止/删除——不再包含"所属项目/循环任务设置"，那部分现在是
+// 项目自己这个节点的详情内容(buildProjectDetailPanel)，不再嵌在每个叶子的详情里重复。
+function buildLeafDetailPanel(node) {
   const wrap = document.createElement("div");
-  const t = r.item;
-  const p = r.project;
-  const isRecurring = p.project_type === "recurring";
+  const t = node.item;
+  const locked = lockMap.get(node.key) || false;
 
   wrap.innerHTML = `
     <div class="inline-form">
@@ -655,7 +719,7 @@ function buildDetailPanel(r, locked) {
              </span>`
           : `<label>最终目标交付物 <input type="text" class="d-deliverable" value="${t.target_deliverable ?? ""}" style="min-width:200px" /></label>
              ${
-               isRecurring
+               node.project.project_type === "recurring"
                  ? `<span>应完成日期：${t.planned_completion_date}（按编号算法自动生成，不可手改，进入计划锁定后可走"订正"改）</span>`
                  : `<label>最终计划完成时间 <input type="date" class="d-completion" value="${t.planned_completion_date ?? ""}" /></label>`
              }`
@@ -664,33 +728,6 @@ function buildDetailPanel(r, locked) {
       <span>状态：${SOURCE_STATUS_LABEL[t.status] ?? t.status}</span>
       ${t.status !== "stopped" ? `<button type="button" class="secondary d-terminate">标记中止</button>` : ""}
       <button type="button" class="secondary d-delete">删除此任务</button>
-    </div>
-    <div class="inline-form" style="margin-top:6px;border-top:1px dashed #ccc;padding-top:6px;">
-      ${
-        isRecurring
-          ? `<strong>所属循环任务设置（会影响这个项目下"生成下一个实例"时的默认命名，不会改已有实例）：</strong>
-             <label>动词前缀 <input type="text" class="p-title-verb" value="${p.recurring_project_settings.title_verb ?? ""}" placeholder="如：制作" style="width:100px" /></label>
-             <label>名词部分(交付物基础名) <input type="text" class="p-title-noun" value="${p.recurring_project_settings.title_noun ?? ""}" placeholder="如：周例会PPT" style="min-width:160px" /></label>
-             <select class="p-module">${moduleOptionsHtml(p.recurring_project_settings.module_id)}</select>
-             <input type="text" class="p-owner" value="${p.recurring_project_settings.owner ?? ""}" placeholder="责任人" />
-             <select class="p-frequency">
-               ${["weekly", "monthly", "custom"].map((f) => `<option value="${f}" ${f === p.recurring_project_settings.frequency ? "selected" : ""}>${f}</option>`).join("")}
-             </select>
-             <select class="p-status">
-               ${["active", "completed", "paused"].map((s) => `<option value="${s}" ${s === p.status ? "selected" : ""}>${s}</option>`).join("")}
-             </select>
-             <button type="button" class="secondary d-delete-project">删除整个循环任务</button>`
-          : `<strong>所属项目设置：</strong>
-             <label>分类 <input type="text" class="p-category" value="${p.category ?? ""}" style="width:10em" /></label>
-             <label>项目截止日期 <input type="date" class="p-deadline" value="${p.deadline_date ?? ""}" /></label>
-             <label>项目状态
-               <select class="p-status">
-                 ${["active", "paused", "completed"].map((s) => `<option value="${s}" ${s === p.status ? "selected" : ""}>${s}</option>`).join("")}
-               </select>
-             </label>
-             <label>项目最终交付物 <input type="text" class="p-deliverable" value="${p.target_deliverable ?? ""}" /></label>
-             <button type="button" class="secondary d-delete-project">删除整个项目</button>`
-      }
     </div>
   `;
 
@@ -726,8 +763,7 @@ function buildDetailPanel(r, locked) {
   }
   // 锁定后，最终目标交付物/最终计划完成时间要一起订正(页面内小表单，不用alert()弹窗)——
   // 一旦任务进了某一周的计划，这两项就跟"实际完成时间做效率对比"这个目的绑在一起，改动
-  // 都要求写清楚订正说明。2026-07-14统一任务模型后循环任务也纳入这套机制(此前循环任务
-  // 不受锁定约束)。
+  // 都要求写清楚订正说明。循环任务也纳入这套机制(此前循环任务不受锁定约束)。
   const amendToggle = wrap.querySelector(".d-amend-toggle");
   if (amendToggle) {
     const amendForm = wrap.querySelector(".d-amend-form");
@@ -775,10 +811,48 @@ function buildDetailPanel(r, locked) {
       deleteFn: () => deleteTask(t.id),
     });
     if (ok) {
-      openDetailKeys.delete(r.key);
+      openDetailKeys.delete(node.key);
       await reloadAll();
     }
   });
+
+  return wrap;
+}
+
+// 项目(1级)节点的"详情"：task_list类型现在补上了标题编辑(此前完全没有入口)+分类/截止
+// 日期/状态/项目最终交付物；recurring类型是动词前缀/名词部分/默认模块责任人/频率/状态。
+// 两种类型都带"删除整个项目/循环任务"。
+function buildProjectDetailPanel(node) {
+  const wrap = document.createElement("div");
+  const p = node.project;
+  const isRecurring = p.project_type === "recurring";
+
+  wrap.innerHTML = isRecurring
+    ? `<div class="inline-form">
+         <label>动词前缀 <input type="text" class="p-title-verb" value="${p.recurring_project_settings.title_verb ?? ""}" placeholder="如：制作" style="width:100px" /></label>
+         <label>名词部分(交付物基础名) <input type="text" class="p-title-noun" value="${p.recurring_project_settings.title_noun ?? ""}" placeholder="如：周例会PPT" style="min-width:160px" /></label>
+         <select class="p-module">${moduleOptionsHtml(p.recurring_project_settings.module_id)}</select>
+         <input type="text" class="p-owner" value="${p.recurring_project_settings.owner ?? ""}" placeholder="责任人" />
+         <select class="p-frequency">
+           ${["weekly", "monthly", "custom"].map((f) => `<option value="${f}" ${f === p.recurring_project_settings.frequency ? "selected" : ""}>${f}</option>`).join("")}
+         </select>
+         <select class="p-status">
+           ${["active", "completed", "paused"].map((s) => `<option value="${s}" ${s === p.status ? "selected" : ""}>${s}</option>`).join("")}
+         </select>
+         <button type="button" class="secondary d-delete-project">删除整个循环任务</button>
+       </div>`
+    : `<div class="inline-form">
+         <label>标题 <input type="text" class="p-title" value="${p.title}" style="min-width:200px" /></label>
+         <label>分类 <input type="text" class="p-category" value="${p.category ?? ""}" style="width:10em" /></label>
+         <label>项目截止日期 <input type="date" class="p-deadline" value="${p.deadline_date ?? ""}" /></label>
+         <label>项目状态
+           <select class="p-status">
+             ${["active", "paused", "completed"].map((s) => `<option value="${s}" ${s === p.status ? "selected" : ""}>${s}</option>`).join("")}
+           </select>
+         </label>
+         <label>项目最终交付物 <input type="text" class="p-deliverable" value="${p.target_deliverable ?? ""}" /></label>
+         <button type="button" class="secondary d-delete-project">删除整个项目</button>
+       </div>`;
 
   if (isRecurring) {
     const titleVerbInput = wrap.querySelector(".p-title-verb");
@@ -813,17 +887,20 @@ function buildDetailPanel(r, locked) {
         },
       });
       if (ok) {
-        openDetailKeys.delete(r.key);
+        openDetailKeys.delete(node.key);
+        openChildrenKeys.delete(node.key);
         await reloadAll();
       }
     });
   } else {
+    const titleInput = wrap.querySelector(".p-title");
     const categoryInput = wrap.querySelector(".p-category");
     const deadlineInput = wrap.querySelector(".p-deadline");
     const deliverableInput = wrap.querySelector(".p-deliverable");
     const statusSelect = wrap.querySelector(".p-status");
     const saveProject = async () => {
       await updateProject(p.id, {
+        title: titleInput.value.trim() || p.title,
         category: categoryInput.value.trim() || null,
         deadline_date: deadlineInput.value || null,
         target_deliverable: deliverableInput.value.trim() || null,
@@ -831,7 +908,7 @@ function buildDetailPanel(r, locked) {
       });
       await reloadAll();
     };
-    [categoryInput, deadlineInput, deliverableInput, statusSelect].forEach((el) => el.addEventListener("change", saveProject));
+    [titleInput, categoryInput, deadlineInput, deliverableInput, statusSelect].forEach((el) => el.addEventListener("change", saveProject));
     wrap.querySelector(".d-delete-project").addEventListener("click", async () => {
       const ok = await confirmAndCascadeDelete({
         label: `项目"${p.title}"（含其下全部${p.tasks.length}个任务，编号${p.level1_number}会被释放可复用）`,
@@ -842,7 +919,8 @@ function buildDetailPanel(r, locked) {
         },
       });
       if (ok) {
-        openDetailKeys.delete(r.key);
+        openDetailKeys.delete(node.key);
+        openChildrenKeys.delete(node.key);
         await reloadAll();
       }
     });
@@ -851,79 +929,52 @@ function buildDetailPanel(r, locked) {
   return wrap;
 }
 
-// "曾经进入过plan"的锁定状态缓存(2026-07-10性能修复)——只在reloadAll()真正重新拉取过
-// 数据库数据时才通过computeLockMap()重新计算，renderTaskTable()本身不再发任何请求。
-// 2026-07-14统一任务模型后lockMap不再需要排除recurring类型(此前循环任务不受锁定约束，
-// 现在统一纳入)，也不再需要分两次查询(顺序队列/截止日期各查一次)，一次listPlannedTaskIds()够了。
-let lockMap = new Map();
-
-function computeLockMap(plannedTaskIds) {
-  const leafRows = buildDisplayRows().filter((r) => r.kind === "leaf");
-  lockMap = new Map(leafRows.map((r) => [r.key, plannedTaskIds.has(r.item.id)]));
+// 二级分组节点的"详情"：task_list类型是唯一能编辑这个分组标题的地方(task_groups表)；
+// recurring类型的分组标题是按月份自动算出来的，没有可编辑内容，只做说明。
+function buildGroupDetailPanel(node) {
+  const wrap = document.createElement("div");
+  const p = node.project;
+  if (p.project_type === "recurring") {
+    wrap.innerHTML = `<span>该分组标题按"动词前缀+月份+名词部分"自动生成，不能手改——要改就去上一级"循环任务"项目的详情里改动词前缀/名词部分。</span>`;
+    return wrap;
+  }
+  wrap.innerHTML = `<label>二级标题(必填) <input type="text" class="g-title" value="${node.groupTitle}" placeholder="如：制作方案" style="min-width:220px" /></label>`;
+  wrap.querySelector(".g-title").addEventListener("change", async (e) => {
+    await upsertTaskGroup(p.id, node.level2, e.target.value.trim());
+    await reloadAll();
+  });
+  return wrap;
 }
 
+function buildDetailPanelForNode(node) {
+  if (node.kind === "leaf") return buildLeafDetailPanel(node);
+  if (node.kind === "group") return buildGroupDetailPanel(node);
+  return buildProjectDetailPanel(node);
+}
+
+// "曾经进入过plan"的锁定状态缓存(2026-07-10性能修复)——只在reloadAll()真正重新拉取过
+// 数据库数据时才通过computeLockMap()重新计算，renderTaskTable()本身不再发任何请求。
+// 统一任务模型后lockMap不再需要排除recurring类型(此前循环任务不受锁定约束，现在统一
+// 纳入)，也不再需要分两次查询，一次listPlannedTaskIds()够了。
+let lockMap = new Map();
+// 哪些非叶子节点(项目/二级分组)当前展开显示子节点——默认全部折叠，用户逐级点开
+// (2026-07-14用户反馈重新设计：原来是一次性拍平显示全部层级，现在改成文件树式逐级展开)
+let openChildrenKeys = new Set();
+
+function computeLockMap(plannedTaskIds) {
+  const leaves = collectLeafNodes(buildTree());
+  lockMap = new Map(leaves.map((n) => [n.key, plannedTaskIds.has(n.item.id)]));
+}
+
+const TABLE_COLSPAN = 10;
+
 function renderTaskTable() {
-  const rows = buildDisplayRows();
+  const tree = buildTree();
+  if (highlightKey) expandAncestorsFor(tree, highlightKey, openChildrenKeys);
   const tbody = document.getElementById("tasks-tbody");
   tbody.innerHTML = "";
-  for (const r of rows) {
-    if (r.kind === "project-header") {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `<td colspan="11" style="background:#f2f2f2;font-weight:600;">${r.label}（${r.typeLabel}）</td>`;
-      tbody.appendChild(tr);
-      continue;
-    }
-    if (r.kind === "level2-header") {
-      const tr = document.createElement("tr");
-      if (r.editableTitle) {
-        // 二级本身没有title列(有三级子任务时二级不单独成一行)，标题存在task_groups里，
-        // 直接在分组标题行内编辑——这样新建时漏填、或者历史遗留没有标题的二级分组，
-        // 都能在这里直接补上
-        tr.innerHTML = `<td colspan="11" style="padding-left:2em;color:#666;">${r.label}
-          <input type="text" class="level2-title-input" value="${r.groupTitle}" placeholder="二级标题(必填)" style="width:220px" />
-        </td>`;
-        tr.querySelector(".level2-title-input").addEventListener("change", async (e) => {
-          await upsertTaskGroup(r.project.id, r.level2, e.target.value.trim());
-          await reloadAll();
-        });
-      } else {
-        tr.innerHTML = `<td colspan="11" style="padding-left:2em;color:#666;">${r.label}</td>`;
-      }
-      tbody.appendChild(tr);
-      continue;
-    }
-
-    const locked = lockMap.get(r.key) || false;
-    const tr = document.createElement("tr");
-    if (r.key === highlightKey) tr.className = "row-highlight";
-    tr.innerHTML = `
-      <td>${r.number}</td>
-      <td>${r.typeLabel}</td>
-      <td class="task-col">${r.projectName}</td>
-      <td class="task-col">${r.title}</td>
-      <td>${r.moduleName}</td>
-      <td>${r.owner}</td>
-      <td class="task-col">${locked ? `🔒 ${r.deliverable ?? ""}` : r.deliverable ?? ""}</td>
-      <td>${locked ? `🔒 ${r.completionDate ?? ""}` : r.completionDate ?? ""}</td>
-      <td>${r.actualDate ?? ""}</td>
-      <td>${r.status}</td>
-      <td><button type="button" class="secondary f-toggle-detail">${openDetailKeys.has(r.key) ? "收起" : "详情"}</button></td>
-    `;
-    tr.querySelector(".f-toggle-detail").addEventListener("click", () => {
-      if (openDetailKeys.has(r.key)) openDetailKeys.delete(r.key);
-      else openDetailKeys.add(r.key);
-      renderTaskTable();
-    });
-    tbody.appendChild(tr);
-
-    if (openDetailKeys.has(r.key)) {
-      const detailTr = document.createElement("tr");
-      const td = document.createElement("td");
-      td.colSpan = 11;
-      td.appendChild(buildDetailPanel(r, locked));
-      detailTr.appendChild(td);
-      tbody.appendChild(detailTr);
-    }
+  for (const node of tree) {
+    renderNode(node, 0, tbody);
   }
   if (highlightKey) {
     const el = document.querySelector(".row-highlight");
@@ -931,10 +982,73 @@ function renderTaskTable() {
   }
 }
 
+function renderNode(node, depth, tbody) {
+  const hasChildren = node.children.length > 0;
+  const expanded = openChildrenKeys.has(node.key);
+  const detailOpen = openDetailKeys.has(node.key);
+  const locked = node.kind === "leaf" ? lockMap.get(node.key) || false : false;
+
+  const tr = document.createElement("tr");
+  if (node.key === highlightKey) tr.className = "row-highlight";
+  // loading节点(只有project_headers缓存、真实tasks还没到)不给可点的展开/详情按钮——
+  // 这时候还不知道它有没有子节点/是不是叶子，点了也没有真实数据可展开，干脆禁用掉，
+  // 等真实数据到达触发下一次renderTaskTable()自动换成可交互状态
+  const toggleCell = node.loading
+    ? `<span class="status">…</span> `
+    : hasChildren
+    ? `<button type="button" class="secondary tree-toggle">${expanded ? "▾" : "▸"}</button> `
+    : "";
+  const detailCell = node.loading
+    ? `<span class="status">加载中</span>`
+    : `<button type="button" class="secondary node-detail-toggle">${detailOpen ? "收起" : "详情"}</button>`;
+  tr.innerHTML = `
+    <td style="padding-left:${depth * 1.5}em">${toggleCell}${node.localNumber}</td>
+    <td>${node.typeLabel}</td>
+    <td class="task-col">${node.title}</td>
+    <td>${node.moduleName}</td>
+    <td>${node.owner}</td>
+    <td class="task-col">${locked ? `🔒 ${node.deliverable ?? ""}` : node.deliverable ?? ""}</td>
+    <td>${locked ? `🔒 ${node.completionDate ?? ""}` : node.completionDate ?? ""}</td>
+    <td>${node.actualDate ?? ""}</td>
+    <td>${node.status}</td>
+    <td>${detailCell}</td>
+  `;
+  if (hasChildren && !node.loading) {
+    tr.querySelector(".tree-toggle").addEventListener("click", () => {
+      if (expanded) openChildrenKeys.delete(node.key);
+      else openChildrenKeys.add(node.key);
+      renderTaskTable();
+    });
+  }
+  if (!node.loading) {
+    tr.querySelector(".node-detail-toggle").addEventListener("click", () => {
+      if (detailOpen) openDetailKeys.delete(node.key);
+      else openDetailKeys.add(node.key);
+      renderTaskTable();
+    });
+  }
+  tbody.appendChild(tr);
+
+  if (detailOpen) {
+    const detailTr = document.createElement("tr");
+    const td = document.createElement("td");
+    td.colSpan = TABLE_COLSPAN;
+    td.appendChild(buildDetailPanelForNode(node));
+    detailTr.appendChild(td);
+    tbody.appendChild(detailTr);
+  }
+
+  if (hasChildren && expanded) {
+    for (const child of node.children) {
+      renderNode(child, depth + 1, tbody);
+    }
+  }
+}
+
 // ---------------- 加载 ----------------
 
 // projects表(嵌套tasks/task_groups/recurring_project_settings) + lockMap要用的锁定状态查询，
-// 一波2个请求一起并发(2026-07-14统一任务模型后从"三张主表+两次锁定查询"收缩成这两个)
+// 一波2个请求一起并发
 async function reloadAll() {
   const [ps, plannedTaskIds] = await Promise.all([listProjects(), listPlannedTaskIds()]);
   projects = ps;
@@ -974,7 +1088,15 @@ async function init() {
 
   const weekSelect = document.getElementById("recurring-first-week");
   weekSelect.innerHTML = weekOptionsHtml(null);
-  document.getElementById("tasks-tbody").innerHTML = `<tr><td colspan="11">加载中...</td></tr>`;
+  // 树默认全折叠，首屏本来就只需要显示到1级——如果project_headers缓存有数据，直接用它
+  // 渲染出1级项目行(展开箭头/详情按钮先禁用，见makeLoadingProjectNode)，不用干等
+  // listProjects()那个带嵌套tasks的重查询；完全没缓存(比如第一次打开这个页面)才退回
+  // "加载中..."占位。
+  if (projects.length > 0) {
+    renderTaskTable();
+  } else {
+    document.getElementById("tasks-tbody").innerHTML = `<tr><td colspan="10">加载中...</td></tr>`;
+  }
 
   // "新建任务"表单本身不依赖"全部任务"列表数据——归属下拉先用ownerOptionsHtml()在projects
   // 还是空数组/缓存表头的状态下渲染，让创建新项目这条路径立刻可用，不用等projects+lockMap
