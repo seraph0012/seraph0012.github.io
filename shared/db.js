@@ -180,18 +180,6 @@ export const countWeeklyTaskEntriesForTask = (taskId) =>
       if (error) throw error;
       return count ?? 0;
     });
-// "最终计划完成时间"锁定判断：一旦这个任务被写进过任意一周的计划(appears_in='plan')，
-// 这个日期就要锁定，改动必须走订正说明——即使那一周已经过去/已经解锁编辑过其他字段，
-// 这个锁定也不解除(判断的是"有没有进入过计划"，不是"当前是否在锁定的周里")。2026-07-14
-// 统一任务模型后weekly_task_entries只有一个task_id外键，锁定查询从"两次bulk查询各自的
-// source_queue_task_id/source_milestone_id"收缩成一次查询。
-export const listPlannedTaskIds = () =>
-  supabase
-    .from("weekly_task_entries")
-    .select("task_id")
-    .eq("appears_in", "plan")
-    .then(unwrap)
-    .then((rows) => new Set(rows.map((r) => r.task_id)));
 
 // ---- 按id批量反查任务标题，供weekly-report渲染候选池和已保存条目的任务名 ----
 export const listTasksByIds = (ids) =>

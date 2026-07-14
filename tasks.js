@@ -19,7 +19,6 @@ import {
   setTaskNumberOwner,
   suggestNextTaskNumber,
   deleteTaskNumber,
-  listPlannedTaskIds,
   countWeeklyTaskEntriesForTask,
   deleteWeeklyTaskEntriesForTask,
 } from "./shared/db.js";
@@ -679,22 +678,12 @@ function expandAncestorsFor(tree, targetKey, openSet, ancestors = []) {
   return false;
 }
 
-function collectLeafNodes(tree) {
-  const out = [];
-  for (const node of tree) {
-    if (node.kind === "leaf") out.push(node);
-    else out.push(...collectLeafNodes(node.children));
-  }
-  return out;
-}
-
 // 叶子节点的"详情"：标题/模块/责任人/预计开始日期/最终目标交付物/最终计划完成时间(含锁定
 // 订正)/实际完成时间/状态/中止/删除——不再包含"所属项目/循环任务设置"，那部分现在是
 // 项目自己这个节点的详情内容(buildProjectDetailPanel)，不再嵌在每个叶子的详情里重复。
 function buildLeafDetailPanel(node) {
   const wrap = document.createElement("div");
   const t = node.item;
-  const locked = lockMap.get(node.key) || false;
 
   wrap.innerHTML = `
     <div class="inline-form">
@@ -705,25 +694,16 @@ function buildLeafDetailPanel(node) {
       <span>实际开始日期：${t.actual_start_date ?? "(尚未进入任何一周计划)"}</span>
     </div>
     <div class="inline-form" style="margin-top:6px;">
-      ${
-        locked
-          ? `<span class="d-locked-display">🔒 最终目标交付物：${t.target_deliverable ?? ""} ｜ 最终计划完成时间：${t.planned_completion_date ?? ""}${
-              t.completion_date_amendment_note ? ` <span class="badge">订正：${t.completion_date_amendment_note}</span>` : ""
-            } <button type="button" class="secondary d-amend-toggle">订正</button></span>
-             <span class="d-amend-form" hidden>
-               <label>新的最终目标交付物 <input type="text" class="d-amend-deliverable" value="${t.target_deliverable ?? ""}" style="min-width:200px" /></label>
-               <label>新的最终计划完成时间 <input type="date" class="d-amend-date" value="${t.planned_completion_date ?? ""}" /></label>
-               <label>订正说明(必填) <input type="text" class="d-amend-note" placeholder="为什么要修改" style="min-width:200px" /></label>
-               <button type="button" class="d-amend-confirm">确认订正</button>
-               <button type="button" class="secondary d-amend-cancel">取消</button>
-             </span>`
-          : `<label>最终目标交付物 <input type="text" class="d-deliverable" value="${t.target_deliverable ?? ""}" style="min-width:200px" /></label>
-             ${
-               node.project.project_type === "recurring"
-                 ? `<span>应完成日期：${t.planned_completion_date}（按编号算法自动生成，不可手改，进入计划锁定后可走"订正"改）</span>`
-                 : `<label>最终计划完成时间 <input type="date" class="d-completion" value="${t.planned_completion_date ?? ""}" /></label>`
-             }`
-      }
+      <span class="d-locked-display">🔒 最终目标交付物：${t.target_deliverable ?? ""} ｜ 最终计划完成时间：${t.planned_completion_date ?? ""}${
+        t.completion_date_amendment_note ? ` <span class="badge">订正：${t.completion_date_amendment_note}</span>` : ""
+      } <button type="button" class="secondary d-amend-toggle">订正</button></span>
+      <span class="d-amend-form" hidden>
+        <label>新的最终目标交付物 <input type="text" class="d-amend-deliverable" value="${t.target_deliverable ?? ""}" style="min-width:200px" /></label>
+        <label>新的最终计划完成时间 <input type="date" class="d-amend-date" value="${t.planned_completion_date ?? ""}" /></label>
+        <label>订正说明(必填) <input type="text" class="d-amend-note" placeholder="为什么要修改" style="min-width:200px" /></label>
+        <button type="button" class="d-amend-confirm">确认订正</button>
+        <button type="button" class="secondary d-amend-cancel">取消</button>
+      </span>
       <label>实际完成时间 <input type="date" class="d-actual" value="${t.actual_completion_date ?? ""}" /></label>
       <span>状态：${SOURCE_STATUS_LABEL[t.status] ?? t.status}</span>
       ${t.status !== "stopped" ? `<button type="button" class="secondary d-terminate">标记中止</button>` : ""}
@@ -735,9 +715,8 @@ function buildLeafDetailPanel(node) {
 
   // 2026-07-14用户明确要求：不管几级任务，字段改动都不该随change事件即时落库，统一改成
   // 点"保存"按钮一次性批量提交这个面板里的所有字段——标题/模块/责任人/预计开始日期/
-  // 实际完成时间(无论是否锁定都能改)+(未锁定时)最终目标交付物/最终计划完成时间，一个
-  // updateTask()调用搞定。已锁定时最终目标交付物/完成时间走下面单独的"订正"表单，那个
-  // 本来就有自己的"确认订正"按钮，不受这次改动影响。
+  // 实际完成时间，一个updateTask()调用搞定。最终目标交付物/最终计划完成时间不在这个
+  // "保存"按钮管辖范围内，见下面的"订正"表单。
   wrap.querySelector(".d-save").addEventListener("click", async () => {
     const resultEl = wrap.querySelector(".d-save-result");
     resultEl.textContent = "保存中...";
@@ -750,10 +729,6 @@ function buildLeafDetailPanel(node) {
         planned_start_date: wrap.querySelector(".d-planned-start").value || null,
         actual_completion_date: wrap.querySelector(".d-actual").value || null,
       };
-      const deliverableInput = wrap.querySelector(".d-deliverable");
-      if (deliverableInput) patch.target_deliverable = deliverableInput.value || null;
-      const completionInput = wrap.querySelector(".d-completion");
-      if (completionInput) patch.planned_completion_date = completionInput.value;
       await updateTask(t.id, patch);
       resultEl.textContent = "已保存";
       resultEl.className = "d-save-result status ok";
@@ -764,38 +739,39 @@ function buildLeafDetailPanel(node) {
     }
   });
 
-  // 锁定后，最终目标交付物/最终计划完成时间要一起订正(页面内小表单，不用alert()弹窗)——
-  // 一旦任务进了某一周的计划，这两项就跟"实际完成时间做效率对比"这个目的绑在一起，改动
-  // 都要求写清楚订正说明。循环任务也纳入这套机制(此前循环任务不受锁定约束)。这个流程
-  // 本来就有自己的"确认订正"按钮(点击才提交)，跟这次"加保存按钮"的改动无关，不用改。
-  const amendToggle = wrap.querySelector(".d-amend-toggle");
-  if (amendToggle) {
-    const amendForm = wrap.querySelector(".d-amend-form");
-    const lockedDisplay = wrap.querySelector(".d-locked-display");
-    amendToggle.addEventListener("click", () => {
-      lockedDisplay.hidden = true;
-      amendForm.hidden = false;
+  // 2026-07-14用户明确要求取消"进入过计划才锁定"这个条件判断——之前只有已经排进过某一周
+  // 计划的任务，改最终目标交付物/最终计划完成时间才需要走"订正"说明，没排进过计划的可以
+  // 自由改；用户指出这个区分没有意义(比如"计划外"直接标完成的任务永远不会进plan，却也
+  // 已经是历史事实，同样不该被随便改掉不留痕迹)，改成**不管什么情况**，这两个字段的改动
+  // 都必须走订正说明，没有"自由编辑"这个状态了——原来分plan/summary判断"是否锁定"的
+  // lockMap/computeLockMap/listPlannedTaskIds整套逻辑也一并删除(见reloadAll()/renderNode()
+  // 的对应改动)，任务列表里也不再需要🔒图标区分"这条锁了/那条没锁"，因为现在所有任务的
+  // 这两个字段都是同一种编辑方式。
+  const amendForm = wrap.querySelector(".d-amend-form");
+  const lockedDisplay = wrap.querySelector(".d-locked-display");
+  wrap.querySelector(".d-amend-toggle").addEventListener("click", () => {
+    lockedDisplay.hidden = true;
+    amendForm.hidden = false;
+  });
+  wrap.querySelector(".d-amend-cancel").addEventListener("click", () => {
+    amendForm.hidden = true;
+    lockedDisplay.hidden = false;
+  });
+  wrap.querySelector(".d-amend-confirm").addEventListener("click", async () => {
+    const note = wrap.querySelector(".d-amend-note").value.trim();
+    if (!note) {
+      alert("请填写订正说明");
+      return;
+    }
+    const newDeliverable = wrap.querySelector(".d-amend-deliverable").value.trim();
+    const newDate = wrap.querySelector(".d-amend-date").value;
+    await updateTask(t.id, {
+      target_deliverable: newDeliverable || null,
+      planned_completion_date: newDate,
+      completion_date_amendment_note: note,
     });
-    wrap.querySelector(".d-amend-cancel").addEventListener("click", () => {
-      amendForm.hidden = true;
-      lockedDisplay.hidden = false;
-    });
-    wrap.querySelector(".d-amend-confirm").addEventListener("click", async () => {
-      const note = wrap.querySelector(".d-amend-note").value.trim();
-      if (!note) {
-        alert("请填写订正说明");
-        return;
-      }
-      const newDeliverable = wrap.querySelector(".d-amend-deliverable").value.trim();
-      const newDate = wrap.querySelector(".d-amend-date").value;
-      await updateTask(t.id, {
-        target_deliverable: newDeliverable || null,
-        planned_completion_date: newDate,
-        completion_date_amendment_note: note,
-      });
-      await reloadAll();
-    });
-  }
+    await reloadAll();
+  });
   const terminateBtn = wrap.querySelector(".d-terminate");
   if (terminateBtn) {
     terminateBtn.addEventListener("click", async () => {
@@ -988,19 +964,9 @@ function buildDetailPanelForNode(node) {
   return buildProjectDetailPanel(node);
 }
 
-// "曾经进入过plan"的锁定状态缓存(2026-07-10性能修复)——只在reloadAll()真正重新拉取过
-// 数据库数据时才通过computeLockMap()重新计算，renderTaskTable()本身不再发任何请求。
-// 统一任务模型后lockMap不再需要排除recurring类型(此前循环任务不受锁定约束，现在统一
-// 纳入)，也不再需要分两次查询，一次listPlannedTaskIds()够了。
-let lockMap = new Map();
 // 哪些非叶子节点(项目/二级分组)当前展开显示子节点——默认全部折叠，用户逐级点开
 // (2026-07-14用户反馈重新设计：原来是一次性拍平显示全部层级，现在改成文件树式逐级展开)
 let openChildrenKeys = new Set();
-
-function computeLockMap(plannedTaskIds) {
-  const leaves = collectLeafNodes(buildTree());
-  lockMap = new Map(leaves.map((n) => [n.key, plannedTaskIds.has(n.item.id)]));
-}
 
 const TABLE_COLSPAN = 10;
 
@@ -1022,7 +988,6 @@ function renderNode(node, depth, tbody) {
   const hasChildren = node.children.length > 0;
   const expanded = openChildrenKeys.has(node.key);
   const detailOpen = openDetailKeys.has(node.key);
-  const locked = node.kind === "leaf" ? lockMap.get(node.key) || false : false;
 
   const tr = document.createElement("tr");
   if (node.key === highlightKey) tr.className = "row-highlight";
@@ -1043,8 +1008,8 @@ function renderNode(node, depth, tbody) {
     <td class="task-col">${node.title}</td>
     <td>${node.moduleName}</td>
     <td>${node.owner}</td>
-    <td class="task-col">${locked ? `🔒 ${node.deliverable ?? ""}` : node.deliverable ?? ""}</td>
-    <td>${locked ? `🔒 ${node.completionDate ?? ""}` : node.completionDate ?? ""}</td>
+    <td class="task-col">${node.deliverable ?? ""}</td>
+    <td>${node.completionDate ?? ""}</td>
     <td>${node.actualDate ?? ""}</td>
     <td>${node.status}</td>
     <td>${detailCell}</td>
@@ -1083,12 +1048,10 @@ function renderNode(node, depth, tbody) {
 
 // ---------------- 加载 ----------------
 
-// projects表(嵌套tasks/task_groups/recurring_project_settings) + lockMap要用的锁定状态查询，
-// 一波2个请求一起并发
+// 2026-07-14用户明确要求取消"进入过计划才锁定"逻辑后，不再需要listPlannedTaskIds()这次
+// 额外查询，只用listProjects()一个请求就够了。
 async function reloadAll() {
-  const [ps, plannedTaskIds] = await Promise.all([listProjects(), listPlannedTaskIds()]);
-  projects = ps;
-  computeLockMap(plannedTaskIds);
+  projects = await listProjects();
   renderTaskTable();
   const ownerSelect = document.getElementById("owner-select");
   const prevValue = ownerSelect.value;
@@ -1135,8 +1098,8 @@ async function init() {
   }
 
   // "新建任务"表单本身不依赖"全部任务"列表数据——归属下拉先用ownerOptionsHtml()在projects
-  // 还是空数组/缓存表头的状态下渲染，让创建新项目这条路径立刻可用，不用等projects+lockMap
-  // 这两个网络请求跑完。等真实项目列表到达后，reloadAll()末尾会用真实数据重新渲染一次这个
+  // 还是空数组/缓存表头的状态下渲染，让创建新项目这条路径立刻可用，不用等listProjects()
+  // 这个网络请求跑完。等真实项目列表到达后，reloadAll()末尾会用真实数据重新渲染一次这个
   // 下拉(2026-07-14用户反馈修复——之前owner-select完全靠reloadAll()才有选项，新建表单在
   // 数据没读完前形同虚设，即使"新建"操作本身根本不需要读现有任务)。
   document.getElementById("owner-select").innerHTML = ownerOptionsHtml();
