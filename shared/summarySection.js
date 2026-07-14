@@ -71,7 +71,7 @@ const TEMPLATE = `
     </div>
 
     <h3>总结条目</h3>
-    <p>"任务1/2/3级"、"最终目标交付物"、"最终完成情况"、"最终计划完成时间"是在对应项目/任务详情页维护的字段，这里只读展示（"最终完成情况"会在你填写下面的"完成情况"时自动同步过去），改动请点"编辑任务信息"跳转过去。</p>
+    <p>"任务1/2/3级"、"最终目标交付物"、"最终完成情况"、"最终计划完成时间"是在对应项目/任务详情页维护的字段，这里只读展示，改动请点"编辑任务信息"跳转过去。"最终完成情况"会在你填写下面的"完成情况"时自动同步过去——但只有当"本周交付材料"文字跟"最终目标交付物"严格一致（去首尾空格）时，才会同步成"已完成"；复杂任务允许跨周分批交付，中途每周标"已完成"只代表这周这部分做完了，"最终完成情况"会继续留在"未完成"，任务会继续出现在下周的候选池/搜索里，等哪周的交付材料终于跟最终目标交付物文字对上，才真正标记为最终完成。</p>
     <div class="table-scroll">
     <table>
       <thead>
@@ -286,10 +286,11 @@ export function mountSummarySection(root, { allModules }) {
       const save = async () => {
         const status = tr.querySelector(".f-status").value || null;
         const isIncomplete = status === "未完成";
+        const deliverableThisWeek = tr.querySelector(".f-deliverable").value || null;
         await updateWeeklyTaskEntry(e.id, {
           module_id: tr.querySelector(".f-module").value || null,
           owner: tr.querySelector(".f-owner").value || null,
-          deliverable_this_week: tr.querySelector(".f-deliverable").value || null,
+          deliverable_this_week: deliverableThisWeek,
           actual_hours: tr.querySelector(".f-hours").value || null,
           status,
           incomplete_reason: isIncomplete ? tr.querySelector(".f-reason").value || null : null,
@@ -297,7 +298,16 @@ export function mountSummarySection(root, { allModules }) {
           risk_level: isIncomplete ? tr.querySelector(".f-risk").value || null : null,
           highlight: tr.querySelector(".f-highlight").checked,
         });
-        if (status) await syncSourceStatus(e.source_type, sourceIdOf(e), status);
+        if (status) {
+          // "已完成"不等于任务本身最终完成——本周交付材料要跟最终目标交付物文字严格相等
+          // (去首尾空格)才算数，复杂任务允许跨周分批交付，见taskLabels.js的syncSourceStatus注释。
+          const isFinal = !!(
+            detail.targetDeliverable &&
+            deliverableThisWeek &&
+            deliverableThisWeek.trim() === detail.targetDeliverable.trim()
+          );
+          await syncSourceStatus(e.source_type, sourceIdOf(e), status, { isFinal });
+        }
       };
       tr.querySelectorAll("select:not(.f-status), input").forEach((el) => el.addEventListener("change", save));
       tr.querySelector(".f-status").addEventListener("change", async () => {

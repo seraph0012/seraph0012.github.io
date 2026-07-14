@@ -219,21 +219,27 @@ export async function listAllActiveCandidates(weekId) {
   return candidates;
 }
 
-export async function syncSourceStatus(sourceType, sourceId, completionStatus) {
-  const target = SOURCE_STATUS_FOR_COMPLETION[sourceType]?.[completionStatus];
+// isFinal：只有"这周实际交付的东西"文字上严格等于"这个任务的最终目标交付物"，才代表任务
+// 本身真正完成——复杂的3级任务允许跨周分批交付（本周先交一部分，下周继续，最终目标交付物
+// 不变），中途每周都可能标"已完成"（指这周那部分），但源表status要留在"进行中"，不能提前
+// 置done，否则currentQueueTask()/候选池会把它当成已完成过滤掉，下一周就选不出来续填了
+// （2026-07-14发现的真实设计缺口，"周完成"和"任务最终完成"此前被当成同一件事在同步）。
+// 调用方(summarySection.js的save())按当前"本周交付材料"跟"最终目标交付物"是否严格文字相等
+// （去首尾空格，大小写敏感）算出isFinal——跟用户确认过，不加"手动强制标最终完成"的兜底，
+// 对不上就是要求这周的交付物文字必须原样等于最终目标交付物。
+export async function syncSourceStatus(sourceType, sourceId, completionStatus, { isFinal = true } = {}) {
+  let target = SOURCE_STATUS_FOR_COMPLETION[sourceType]?.[completionStatus];
   if (!target || sourceId == null) return;
+  if (completionStatus === "已完成" && !isFinal) {
+    target = "in_progress";
+  }
   const today = new Date().toISOString().slice(0, 10);
+  const done = target === "done";
   if (sourceType === "queue_task") {
-    await updateQueueProjectTask(sourceId, {
-      status: target,
-      ...(target === "done" ? { actual_completion_date: today } : {}),
-    });
+    await updateQueueProjectTask(sourceId, { status: target, actual_completion_date: done ? today : null });
   } else if (sourceType === "milestone") {
-    await updateMilestone(sourceId, { status: target, ...(target === "done" ? { actual_date: today } : {}) });
+    await updateMilestone(sourceId, { status: target, actual_date: done ? today : null });
   } else if (sourceType === "recurring_instance") {
-    await updateRecurringInstance(sourceId, {
-      status: target,
-      ...(target === "done" ? { actual_completion_date: today } : {}),
-    });
+    await updateRecurringInstance(sourceId, { status: target, actual_completion_date: done ? today : null });
   }
 }
