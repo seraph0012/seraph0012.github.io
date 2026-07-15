@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>周报自动化系统 — 设置</title>
+  <link rel="stylesheet" href="./shared/style.css" />
+</head>
+<body>
+  <nav id="app-nav"></nav>
+
+  <h1>设置（settings）</h1>
+
+  <section>
+    <h2>模块</h2>
+    <form id="module-create-form" class="inline-form">
+      <input type="text" name="name" placeholder="模块名称，如 科研项目" required />
+      <button type="submit">新增</button>
+    </form>
+    <p id="module-create-result" class="status"></p>
+    <table>
+      <thead><tr><th>名称</th><th>当前</th><th></th></tr></thead>
+      <tbody id="modules-tbody"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>责任人</h2>
+    <form id="person-create-form" class="inline-form">
+      <input type="text" name="name" placeholder="姓名，如 刘璇" required />
+      <button type="submit">新增</button>
+    </form>
+    <p id="person-create-result" class="status"></p>
+    <table>
+      <thead><tr><th>姓名</th><th>当前</th><th></th></tr></thead>
+      <tbody id="people-tbody"></tbody>
+    </table>
+  </section>
+
+  <script type="module" src="./settings.js"></script>
+</body>
+</html>

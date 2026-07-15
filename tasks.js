@@ -59,20 +59,23 @@ function moduleOptionsHtml(selectedId) {
 // "严格版"(没有留空选项)，默认预填"唯一模块/唯一责任人"，避免每次都要手动选。
 // 编辑已有任务时仍用上面允许留空的moduleOptionsHtml，不强行修正历史数据。
 function moduleOptionsHtmlStrict(selectedId) {
-  if (allModules.length === 0) return `<option value="">(请先去模块管理页面添加)</option>`;
+  if (allModules.length === 0) return `<option value="">(请先去"设置"页面添加)</option>`;
   return allModules.map((m) => `<option value="${m.id}" ${m.id === selectedId ? "selected" : ""}>${m.name}</option>`).join("");
 }
+// 2026-07-16：优先用settings.html标记的"当前模块"(modules.is_current，见sql/0022)，
+// 数量变多后"只有一个自动选中"这条启发式会失效，is_current是更明确的信号；只有还没有人
+// 标记"当前"时才退回旧启发式(避免用户还没去设置页面点"设为当前"之前，预填功能直接失效)。
 function soleModuleId() {
-  return allModules.length === 1 ? allModules[0].id : null;
+  return allModules.find((m) => m.is_current)?.id ?? (allModules.length === 1 ? allModules[0].id : null);
 }
 
 function peopleOptionsHtml(selectedName, { allowEmpty = false } = {}) {
   const emptyOpt = allowEmpty ? `<option value="">(未设置)</option>` : "";
-  if (allPeople.length === 0) return emptyOpt || `<option value="">(请先去责任人管理页面添加)</option>`;
+  if (allPeople.length === 0) return emptyOpt || `<option value="">(请先去"设置"页面添加)</option>`;
   return emptyOpt + allPeople.map((p) => `<option value="${p.name}" ${p.name === selectedName ? "selected" : ""}>${p.name}</option>`).join("");
 }
 function solePersonName() {
-  return allPeople.length === 1 ? allPeople[0].name : null;
+  return allPeople.find((p) => p.is_current)?.name ?? (allPeople.length === 1 ? allPeople[0].name : null);
 }
 
 function weekOptionsHtml(selectedId) {

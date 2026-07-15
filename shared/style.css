@@ -18,6 +18,40 @@ body.wide-page { max-width: 1600px; }
 .task-col { max-width: 14em; white-space: normal; word-break: break-word; }
 td.readonly-col { color: #555; }
 
+/* "本周计划(已保存)"/"总结条目"表格：固定列宽布局，取代浏览器auto-layout的启发式分配——
+   列数一多(18/19列)，auto-layout容易把"任务1/2/3级"这种本该显示长标题的列挤到只剩几个
+   字宽，反而给短小的固定字段(用时/复选框等)让出多余空间(2026-07-16用户反馈)。列宽由
+   planSection.js/summarySection.js模板里的<colgroup>声明，这里只需要打开table-layout:fixed
+   开关+给task-col解除max-width限制(fixed布局下宽度改由colgroup决定，不能再靠max-width
+   限流)。tasks.js的树状表格、candidates-tbody候选池预览表格仍用auto-layout+
+   .task-col原来的max-width，不受这条规则影响(选择器加了.report-table限定，不是全局改)。 */
+.report-table { table-layout: fixed; }
+.report-table .task-col { max-width: none; }
+.report-table td { overflow: hidden; } /* 兜底：万一某个控件意外撑到比列宽还大，裁掉而不是溢出到下一列 */
+/* select/date input这类原生控件默认按内容/浏览器intrinsic宽度渲染，不会自动服从
+   table-layout:fixed算出来的列宽——不加这条，列变窄之后这些控件会比所在列更宽，
+   视觉上挤进右边相邻的列，看起来像"文本框和右边的元素靠得太近/重叠"
+   (2026-07-16用户反馈)。checkbox排除在外，不然复选框会被拉伸变形。 */
+.report-table td input:not([type="checkbox"]),
+.report-table td select {
+  width: 100%;
+  box-sizing: border-box;
+}
+/* 本周交付物/交付材料/未完成原因/整改措施/需协调资源这类容易写长的自由文本字段，改用
+   textarea多行显示，就不用为了塞下几十字硬撑很宽的列——textarea本身撑满所在列宽度，
+   高度按内容换行自然增长(min-height给个最小两行高度，resize:vertical允许手动拉高)。 */
+.report-table td textarea { width: 100%; min-height: 2.6em; resize: vertical; box-sizing: border-box; }
+/* 上/下移动按钮默认按钮的padding(6px 14px)对一个单字符箭头来说太宽，是"排序"列本身
+   占用空间过大的主因(2026-07-16用户反馈)。两个按钮改成竖着堆叠(而不是并排)，这样这一列
+   只需要容纳"一个按钮的宽度"而不是"两个按钮的宽度之和"，能收得更窄；删除按钮同样收窄+
+   把文字换成红色"×"，不用"删除"两个汉字撑宽这一列。 */
+.report-table .sort-cell { display: flex; flex-direction: column; gap: 2px; }
+.report-table .sort-btn { padding: 1px 4px; font-size: 11px; line-height: 1.2; }
+/* 风险这一格同时放风险等级(select，决定PPT颜色)和风险说明(textarea，PPT里实际显示的文字)，
+   两个width:100%的控件默认会自然换行堆叠，这里加一点间距避免贴得太紧(2026-07-16新增)。 */
+.report-table .f-risk { margin-bottom: 2px; }
+.report-table .delete-x { padding: 2px 8px; color: #c0392b; font-weight: bold; }
+
 .project-block { border: 1px solid #ddd; border-radius: 6px; padding: 10px 12px; margin-bottom: 14px; }
 .project-block h3 { margin: 0 0 8px; font-size: 15px; }
 .locked-date { color: #888; }

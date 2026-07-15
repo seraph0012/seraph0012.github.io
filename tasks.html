@@ -10,8 +10,6 @@
   <nav id="app-nav"></nav>
 
   <h1>任务管理</h1>
-  <p>所有任务（顺序队列/截止日期/循环任务）统一在下面一棵树里管理，默认全部折叠，只显示1级项目——点▸展开看2级/3级。每一级只显示它自己在这一级的编号（完整编号如"5.1.1"只在制作周报/PPT里用得到，跟这里无关）。先选"归属"——选已有项目/循环任务就是给它加一个新任务/生成下一个实例，选"+新建"就是从头建一个。
-  标题/最终目标交付物/最终计划完成时间是每个任务都必填的字段。不管1/2/3哪一级，标题和其他专属设置都要点"详情"才能编辑。</p>
 
   <section>
     <h2>新建任务</h2>
@@ -25,7 +23,7 @@
         </span>
         <span id="new-project-extra-wrap">
           <input type="text" id="new-project-category" placeholder="分类(可选)" />
-          <label>项目截止日期(可选) <input type="date" id="new-project-deadline" /></label>
+          <label>截止日期 <input type="date" id="new-project-deadline" /></label>
           <input type="text" id="new-project-deliverable" placeholder="项目最终交付物(可选)" />
         </span>
       </span>
@@ -33,13 +31,13 @@
       <span id="leaf-fields" hidden>
         <label>二级编号 <select id="wbs-level2-select"></select></label>
         <label id="wbs-level2-new-wrap" hidden>新二级编号 <input type="number" id="wbs-level2-new" min="1" style="width:5em" /></label>
-        <label id="wbs-level2-title-wrap" hidden>二级标题(这个二级下会有多个三级子任务时必填) <input type="text" id="wbs-level2-title" placeholder="如：制作方案" style="min-width:160px" /></label>
-        <label>三级编号(留空=该二级本身就是任务) <input type="number" id="wbs-level3" min="1" placeholder="留空=无三级" style="width:6em" /></label>
+        <label id="wbs-level2-title-wrap" hidden>二级标题 <input type="text" id="wbs-level2-title" placeholder="如：制作方案" style="min-width:160px" /></label>
+        <label>三级编号 <input type="number" id="wbs-level3" min="1" placeholder="留空=无三级" style="width:6em" /></label>
         <input type="text" id="leaf-title" placeholder="任务标题" style="min-width:200px" />
         <label>模块 <select id="leaf-module"></select></label>
         <label>责任人 <select id="leaf-owner"></select></label>
-        <input type="text" id="leaf-deliverable" placeholder="最终目标交付物(必填)" style="min-width:200px" />
-        <label>预计开始日期(可选) <input type="date" id="leaf-start-date" /></label>
+        <input type="text" id="leaf-deliverable" placeholder="最终目标交付物" style="min-width:200px" />
+        <label>预计开始日期 <input type="date" id="leaf-start-date" /></label>
         <label>最终计划完成时间 <input type="date" id="leaf-completion-date" /></label>
       </span>
 
@@ -51,8 +49,8 @@
           <option value="monthly">monthly</option>
           <option value="custom">custom</option>
         </select>
-        <label>动词前缀 <input type="text" id="recurring-title-verb" placeholder="可选，如：制作" style="width:100px" /></label>
-        <label>名词部分/交付物基础名 <input type="text" id="recurring-title-noun" placeholder="必填，如：周例会PPT" style="min-width:180px" /></label>
+        <label>动词前缀 <input type="text" id="recurring-title-verb" placeholder="如：制作" style="width:100px" /></label>
+        <label>名词部分 <input type="text" id="recurring-title-noun" placeholder="如：周例会PPT" style="min-width:180px" /></label>
         <label>第一次的例会周 <select id="recurring-first-week"></select></label>
       </span>
 

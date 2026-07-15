@@ -19,6 +19,7 @@ import {
 import { dateWithWeekday } from "./dateUtils.js";
 import { validateSourceDetail, validateOwnFields } from "./entryValidation.js";
 import { renderTaskPicker } from "./taskPicker.js";
+import { moveRow } from "./rowReorder.js";
 
 const PLAN_REQUIRED_FIELDS = [
   ["module_id", "模块"],
@@ -39,6 +40,13 @@ const PRIORITY_OPTIONS = [
   ["urgent_not_important", "紧急不重要"],
   ["neither", "不紧急不重要"],
 ];
+
+// 2026-07-16：本周交付物/需协调资源改用<textarea>多行显示后，插入的是文本节点(标签之间)
+// 而不是value=""属性——不能再沿用"只在value属性里转义引号"的老习惯，< > &不转义的话会
+// 直接被当成HTML标签解析、破坏页面结构，这里补一个最小转义。
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+}
 
 const TEMPLATE = `
   <div class="lock-bar inline-form">
@@ -82,32 +90,51 @@ const TEMPLATE = `
 
   <div class="manual-add-block">
     <h3>手动搜索添加任务</h3>
-    <p>候选池是按规则自动推荐的，可能有遗漏——按编号/标题搜索后点击即可直接加入本周计划（默认归类"本周新增"，加入后可以在下面表格里改）。</p>
     <div class="manual-picker"></div>
     <button type="button" class="refresh-manual-btn secondary">刷新列表</button>
     <p class="manual-add-result status"></p>
   </div>
 
   <h3>本周计划（已保存）</h3>
-  <p>"任务1/2/3级"、"最终目标交付物"、"最终计划完成时间"是在对应项目/任务详情页维护的静态字段，这里只读展示，改动请点"编辑任务信息"跳转过去。改完下面表格里的字段后点"保存"才会提交（点"锁定本周计划"时也会自动先保存一次，不会漏掉还没点保存的改动）。</p>
   <button type="button" class="save-plan-btn">保存</button>
   <p class="save-plan-result status"></p>
   <div class="table-scroll">
-  <table>
+  <table class="report-table" style="min-width:1408px">
+    <colgroup>
+      <col style="width:36px" /><!-- 排序 -->
+      <col style="width:40px" /><!-- 模块 -->
+      <col style="width:32px" /><!-- 类别 -->
+      <col style="width:130px" /><!-- 任务1级 -->
+      <col style="width:130px" /><!-- 任务2级 -->
+      <col style="width:130px" /><!-- 任务3级 -->
+      <col style="width:32px" /><!-- 责任人 -->
+      <col style="width:130px" /><!-- 本周交付物 -->
+      <col style="width:60px" /><!-- 计划用时 -->
+      <col style="width:100px" /><!-- 计划开始 -->
+      <col style="width:100px" /><!-- 执行截止 -->
+      <col style="width:110px" /><!-- 最终目标交付物 -->
+      <col style="width:84px" /><!-- 最终计划完成时间 -->
+      <col style="width:84px" /><!-- 优先级 -->
+      <col style="width:84px" /><!-- 需协调资源 -->
+      <col style="width:40px" /><!-- 重点 -->
+      <col style="width:50px" /><!-- 编辑 -->
+      <col style="width:36px" /><!-- 删除 -->
+    </colgroup>
     <thead>
       <tr>
+        <th></th>
+        <th>模块</th>
+        <th>类别</th>
         <th>任务1级</th>
         <th>任务2级</th>
         <th>任务3级</th>
-        <th>最终目标交付物</th>
-        <th>最终计划完成时间</th>
-        <th>类别</th>
-        <th>模块</th>
         <th>责任人</th>
         <th>本周交付物</th>
         <th>计划用时</th>
         <th>计划开始</th>
         <th>执行截止</th>
+        <th>最终目标交付物</th>
+        <th>最终计划完成时间</th>
         <th>优先级</th>
         <th>需协调资源</th>
         <th>重点</th>
@@ -127,6 +154,9 @@ export function mountPlanSection(root, { allModules, allPeople }) {
   let previousWeek = null;
   let candidates = [];
   let manualCandidates = [];
+  // 当前"本周计划"表格里已用到的最大sort_order，新插入的行追加到末尾时用它+1（本地维护，
+  // 不用每次插入都额外查一次数据库要max）。loadSavedPlan()整表刷新时重新算一遍。
+  let currentMaxSortOrder = 0;
 
   function currentSequentialTask(project) {
     const sorted = [...project.tasks].sort((a, b) => {
@@ -188,11 +218,10 @@ export function mountPlanSection(root, { allModules, allPeople }) {
 
     const filtered = raw.filter((c) => !alreadyPlanned.has(c.task_id));
     const detailMap = await buildSourceDetailMap(filtered.map((c) => c.task_id));
-    const soleModuleId = allModules.length === 1 ? allModules[0].id : null;
     for (const c of filtered) {
       c.detail = detailMap.get(c.task_id) || {};
       c.plan_category = carryOver.has(c.task_id) ? "上周未完成" : "本周新增";
-      if (c.module_id == null && soleModuleId != null) c.module_id = soleModuleId;
+      if (c.module_id == null) c.module_id = defaultModuleId();
     }
     return filtered;
   }
@@ -286,26 +315,28 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     await loadSavedPlan();
   });
 
-  function moduleOptionsHtml(selectedId) {
-    return (
-      `<option value="">(未分类)</option>` +
-      allModules
-        .map((m) => `<option value="${m.id}" ${m.id === selectedId ? "selected" : ""}>${m.name}</option>`)
-        .join("")
-    );
-  }
   function priorityOptionsHtml(selected) {
     return PRIORITY_OPTIONS.map(
       ([v, l]) => `<option value="${v}" ${v === (selected || "") ? "selected" : ""}>${l}</option>`
     ).join("");
   }
-  // 2026-07-14用户反馈：责任人应该跟模块一样是下拉列表，不是自由文本框(之前唯一的责任人
-  // 来源是people表，允许自由打字反而更容易打错/不一致)
-  function peopleOptionsHtml(selectedName) {
-    return (
-      `<option value="">(未设置)</option>` +
-      allPeople.map((p) => `<option value="${p.name}" ${p.name === selectedName ? "selected" : ""}>${p.name}</option>`).join("")
-    );
+  // 2026-07-16用户要求：模块/责任人不再在计划/总结表格里做成下拉选择框(这两个字段实际上
+  // 长期固定不变，逐行选择纯属浪费空间)，改成settings.html维护的"当前模块"/"当前责任人"
+  // (modules.is_current/people.is_current，见sql/0022)，这里只读展示对应任务自己的
+  // module_id/owner——真正想改一个任务的模块/责任人，去tasks.html那边改(跟其它"WBS级
+  // 静态字段"用同一套"改动请去对应任务详情页"的约定)。defaultModuleId/defaultOwnerName
+  // 优先用is_current标记，标记之前退回旧的"候选值只有一个时自动选中"启发式(迁移刚跑完、
+  // 用户还没去设置页面点"设为当前"之前，预填功能不应该直接失效)，成为候选池/手动添加
+  // 任务时給module_id/owner兜底默认值的唯一来源，跟tasks.js的soleModuleId()/solePersonName()
+  // 用同一套优先级规则。
+  function moduleNameFor(moduleId) {
+    return allModules.find((m) => m.id === moduleId)?.name ?? "";
+  }
+  function defaultModuleId() {
+    return allModules.find((m) => m.is_current)?.id ?? (allModules.length === 1 ? allModules[0].id : null);
+  }
+  function defaultOwnerName() {
+    return allPeople.find((p) => p.is_current)?.name ?? (allPeople.length === 1 ? allPeople[0].name : null);
   }
 
   function renderCandidates() {
@@ -322,7 +353,7 @@ export function mountPlanSection(root, { allModules, allPeople }) {
         <td class="task-col">${c.detail.level2Text || ""}</td>
         <td class="task-col">${c.detail.level3Text || ""}</td>
         <td>${c.plan_category}</td>
-        <td><select class="f-module">${moduleOptionsHtml(c.module_id)}</select></td>
+        <td>${moduleNameFor(c.module_id)}</td>
         <td><input type="text" class="f-deliverable" value="${c.deliverable_this_week || ""}" style="width:14em" /></td>
         <td><input type="number" class="f-hours" step="0.5" style="width:4em" /></td>
         <td><select class="f-priority">${priorityOptionsHtml(null)}</select></td>
@@ -375,14 +406,15 @@ export function mountPlanSection(root, { allModules, allPeople }) {
           meeting_week_id: week.id,
           appears_in: "plan",
           task_id: c.task_id,
-          module_id: tr.querySelector(".f-module").value || null,
+          module_id: c.module_id ?? defaultModuleId(),
           plan_category: c.plan_category,
-          owner: c.owner || (allPeople.length === 1 ? allPeople[0].name : null),
+          owner: c.owner || defaultOwnerName(),
           deliverable_this_week: tr.querySelector(".f-deliverable").value || null,
           planned_hours: tr.querySelector(".f-hours").value || null,
           priority_quadrant: tr.querySelector(".f-priority").value || null,
           execution_deadline: c.execution_deadline || null,
           resources_needed: "无",
+          sort_order: ++currentMaxSortOrder,
         },
       });
     }
@@ -456,17 +488,17 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     resultEl.className = "manual-add-result status";
     try {
       const carryOver = await computeCarryOverSet(previousWeek);
-      const soleModuleId = allModules.length === 1 ? allModules[0].id : null;
       const row = {
         meeting_week_id: week.id,
         appears_in: "plan",
         task_id: c.task_id,
-        module_id: c.module_id ?? soleModuleId,
+        module_id: c.module_id ?? defaultModuleId(),
         plan_category: carryOver.has(c.task_id) ? "上周未完成" : "本周新增",
-        owner: c.owner || (allPeople.length === 1 ? allPeople[0].name : null),
+        owner: c.owner || defaultOwnerName(),
         deliverable_this_week: c.deliverable_this_week,
         execution_deadline: c.execution_deadline || null,
         resources_needed: "无",
+        sort_order: ++currentMaxSortOrder,
       };
       const entry = await createWeeklyTaskEntry(row);
       maybeSetActualStart(c.task_id, c.actualStartDate, week.meeting_date).catch(() => {});
@@ -493,37 +525,41 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     const dis = locked ? "disabled" : "";
     const tr = document.createElement("tr");
     tr.dataset.entryId = e.id;
+    tr.dataset.sortOrder = e.sort_order ?? "";
     tr.innerHTML = `
+      <td><div class="sort-cell"><button type="button" class="secondary sort-btn f-up" ${dis} title="上移">↑</button><button type="button" class="secondary sort-btn f-down" ${dis} title="下移">↓</button></div></td>
+      <td class="readonly-col">${moduleNameFor(e.module_id)}</td>
+      <td class="readonly-col">${e.plan_category || ""}</td>
       <td class="task-col readonly-col">${detail.level1Text || ""}</td>
       <td class="task-col readonly-col">${detail.level2Text || ""}</td>
       <td class="task-col readonly-col">${detail.level3Text || ""}</td>
-      <td class="task-col readonly-col">${detail.targetDeliverable || ""}</td>
-      <td class="readonly-col">${detail.completionDate || ""}</td>
-      <td class="readonly-col">${e.plan_category || ""}</td>
-      <td><select class="f-module" ${dis}>${moduleOptionsHtml(e.module_id)}</select></td>
-      <td><select class="f-owner" ${dis}>${peopleOptionsHtml(e.owner)}</select></td>
-      <td><input type="text" class="f-deliverable" value="${e.deliverable_this_week || ""}" style="width:12em" ${dis} /></td>
-      <td><input type="number" class="f-hours" step="0.5" value="${e.planned_hours ?? ""}" style="width:4em" ${dis} /></td>
+      <td class="readonly-col">${e.owner || ""}</td>
+      <td><textarea class="f-deliverable" rows="2" ${dis}>${escapeHtml(e.deliverable_this_week)}</textarea></td>
+      <td><input type="number" class="f-hours" step="0.5" value="${e.planned_hours ?? ""}" ${dis} /></td>
       <td><input type="date" class="f-start" value="${e.plan_start_date || ""}" min="${week.meeting_date}" max="${week.work_week_end || ""}" ${dis} /></td>
       <td><input type="date" class="f-deadline" value="${e.execution_deadline || ""}" min="${week.meeting_date}" max="${week.work_week_end || ""}" ${dis} /></td>
+      <td class="task-col readonly-col">${detail.targetDeliverable || ""}</td>
+      <td class="readonly-col">${detail.completionDate || ""}</td>
       <td><select class="f-priority" ${dis}>${priorityOptionsHtml(e.priority_quadrant)}</select></td>
-      <td><input type="text" class="f-resources" value="${e.resources_needed || "无"}" style="width:8em" ${dis} /></td>
+      <td><textarea class="f-resources" rows="2" ${dis}>${escapeHtml(e.resources_needed || "无")}</textarea></td>
       <td><input type="checkbox" class="f-highlight" ${e.highlight ? "checked" : ""} ${dis} /></td>
-      <td>${detail.detailUrl ? `<a href="${detail.detailUrl}" target="_blank" rel="noopener">编辑任务信息</a>` : ""}</td>
-      <td><button type="button" class="secondary f-delete" ${dis}>删除</button></td>
+      <td>${detail.detailUrl ? `<a href="${detail.detailUrl}" target="_blank" rel="noopener">编辑</a>` : ""}</td>
+      <td><button type="button" class="secondary delete-x" ${dis} title="删除">×</button></td>
     `;
     // 2026-07-14用户要求：字段改动不再随change事件即时落库，统一改成点整张表格上方的
     // "保存"按钮批量提交(saveAllPlanRows())，跟这里的"删除"这类立即生效的破坏性操作分开
-    tr.querySelector(".f-delete").addEventListener("click", async () => {
+    tr.querySelector(".delete-x").addEventListener("click", async () => {
       await deleteWeeklyTaskEntry(e.id);
       tr.remove();
     });
+    tr.querySelector(".f-up").addEventListener("click", () => moveRow(tr, "up"));
+    tr.querySelector(".f-down").addEventListener("click", () => moveRow(tr, "down"));
     return tr;
   }
 
   async function loadSavedPlan() {
     if (!week) return;
-    root.querySelector(".plan-tbody").innerHTML = `<tr><td colspan="17">加载中...</td></tr>`;
+    root.querySelector(".plan-tbody").innerHTML = `<tr><td colspan="18">加载中...</td></tr>`;
     const entries = await listWeeklyTaskEntries(week.id, "plan");
     const detailMap = await buildSourceDetailMap(entries.map((e) => e.task_id));
 
@@ -535,6 +571,7 @@ export function mountPlanSection(root, { allModules, allPeople }) {
       const detail = detailMap.get(e.task_id) || {};
       tbody.appendChild(buildPlanRowElement(e, detail, locked));
     }
+    currentMaxSortOrder = entries.reduce((m, e) => Math.max(m, e.sort_order ?? 0), 0);
   }
 
   // 遍历当前表格里所有行，把显示的值一次性批量提交——不逐字段自动保存，改成"填完点保存"
@@ -549,8 +586,6 @@ export function mountPlanSection(root, { allModules, allPeople }) {
       for (const tr of rows) {
         const entryId = Number(tr.dataset.entryId);
         await updateWeeklyTaskEntry(entryId, {
-          module_id: tr.querySelector(".f-module").value || null,
-          owner: tr.querySelector(".f-owner").value || null,
           deliverable_this_week: tr.querySelector(".f-deliverable").value || null,
           planned_hours: tr.querySelector(".f-hours").value || null,
           plan_start_date: tr.querySelector(".f-start").value || null,

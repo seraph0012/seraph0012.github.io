@@ -24,8 +24,6 @@ const PRIORITY_LABEL = {
   urgent_not_important: "不重要紧急",
   neither: "不重要不紧急",
 };
-const RISK_LABEL = { green: "低", yellow: "中", red: "高" };
-
 const RISK_HIGHLIGHT = { green: "00FF00", yellow: "FFFF00", red: "FF0000" };
 const PRIORITY_HIGHLIGHT = {
   urgent_important: "FF0000",
@@ -60,20 +58,25 @@ function blankRepeatingColumns(rows, cols, dependency = {}) {
   return out;
 }
 
-function rowFills(highlight, colCount) {
-  return Array.from({ length: colCount }, (_, c) => (c < 2 ? "white" : highlight ? "highlight" : "white"));
+// 任务1/2/3级(标题)列在buildPlanLikeRows/buildSummaryRows里都固定是索引2/3/4——两个函数
+// 拼row数组时module/category永远是0/1，紧接着level1Text/level2Text/level3Text，后面才是
+// 各自不同的字段。2026-07-16用户反馈：重点工作(highlight)只应该给任务标题这几列的单元格
+// 上背景色，不该整行都上色(此前是"module/category之外的所有列都上色"，范围太大)。
+const TITLE_COLS = [2, 3, 4];
+
+// row传的是blankRepeatingColumns处理过之后的最终文本(即将写进单元格的内容)——同一个标题
+// 列如果文本是空的(没有3级任务时level3Text本来就是""，或者该列因为跟上一行重复被合并
+// 逻辑清空)，就不该上色，不然会出现一个染色但看起来空空如也的单元格(2026-07-16用户反馈)。
+function rowFills(highlight, row) {
+  return row.map((text, c) => (highlight && TITLE_COLS.includes(c) && text !== "" ? "highlight" : "white"));
 }
 
-function sortKey(e, detail, moduleNameById) {
-  return [moduleNameById.get(e.module_id) || "", detail.level1 ?? 0, detail.level2 ?? 0, detail.level3 ?? 0].join("");
-}
-
+// entries不在这里重排——2026-07-15起改成直接沿用weekly_task_entries.sort_order的顺序
+// (db.js的listWeeklyTaskEntries已经按这个排好)，不再自动按模块+WBS编号重排。用户反馈
+// 手动做PPT时顺序是当时开会念到的顺序，比如"上周未完成"经常排在"本周新增"前面，不一定
+// 按编号——现在顺序由用户在网页上用上/下箭头控制(planSection.js/summarySection.js)。
 function buildPlanLikeRows(entries, detailMap, moduleNameById) {
-  const sorted = [...entries].sort((a, b) =>
-    sortKey(a, detailMap.get(a.task_id) || {}, moduleNameById).localeCompare(
-      sortKey(b, detailMap.get(b.task_id) || {}, moduleNameById)
-    )
-  );
+  const sorted = entries;
   const rows = sorted.map((e) => {
     const detail = detailMap.get(e.task_id) || {};
     return [
@@ -96,7 +99,7 @@ function buildPlanLikeRows(entries, detailMap, moduleNameById) {
   const blanked = blankRepeatingColumns(rows, [0, 1, 2, 3], { 3: 2 });
   const PRIORITY_COL = 12;
   return blanked.map((row, i) => {
-    const fills = rowFills(!!sorted[i].highlight, row.length);
+    const fills = rowFills(!!sorted[i].highlight, row);
     return row.map((text, c) => ({
       text,
       fill: fills[c],
@@ -106,11 +109,7 @@ function buildPlanLikeRows(entries, detailMap, moduleNameById) {
 }
 
 function buildSummaryRows(entries, detailMap, moduleNameById) {
-  const sorted = [...entries].sort((a, b) =>
-    sortKey(a, detailMap.get(a.task_id) || {}, moduleNameById).localeCompare(
-      sortKey(b, detailMap.get(b.task_id) || {}, moduleNameById)
-    )
-  );
+  const sorted = entries;
   const rows = sorted.map((e) => {
     const detail = detailMap.get(e.task_id) || {};
     return [
@@ -125,7 +124,7 @@ function buildSummaryRows(entries, detailMap, moduleNameById) {
       e.actual_hours != null ? `${e.actual_hours}h` : "",
       e.incomplete_reason || "",
       e.rectification_measures || "",
-      RISK_LABEL[e.risk_level] || "",
+      e.risk_note || "",
       detail.targetDeliverable || "",
       detail.sourceStatus || "",
       monthDayLabel(detail.completionDate),
@@ -134,7 +133,7 @@ function buildSummaryRows(entries, detailMap, moduleNameById) {
   const blanked = blankRepeatingColumns(rows, [0, 1, 2, 3], { 3: 2 });
   const RISK_COL = 11;
   return blanked.map((row, i) => {
-    const fills = rowFills(!!sorted[i].highlight, row.length);
+    const fills = rowFills(!!sorted[i].highlight, row);
     return row.map((text, c) => ({
       text,
       fill: fills[c],

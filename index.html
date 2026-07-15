@@ -3,31 +3,36 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>周报自动化系统</title>
+  <title>周报自动化系统 — 制作周报</title>
   <link rel="stylesheet" href="./shared/style.css" />
 </head>
-<body>
+<body class="wide-page">
   <nav id="app-nav"></nav>
 
-  <h1>周报自动化系统</h1>
+  <h1>制作周报</h1>
 
   <section>
-    <h2>快捷入口</h2>
-    <p><a href="weekly-report.html">→ 制作本周周报（总结+计划+生成PPT）</a></p>
+    <h2>目标例会周</h2>
+    <form class="inline-form" onsubmit="return false">
+      <select id="week-select"></select>
+    </form>
+    <p id="week-info" class="status"></p>
   </section>
 
   <section>
-    <h2>任务管理</h2>
-    <p><a href="tasks.html">新建/管理任务（顺序队列/截止日期/循环任务）</a></p>
-    <p><a href="bulk-import.html">批量导入（Excel模板一次性建好一批项目/任务）</a></p>
+    <h2>① 上周总结</h2>
+    <div id="summary-root"></div>
   </section>
 
   <section>
-    <h2>基础数据</h2>
-    <p><a href="meeting-weeks.html">例会日历</a></p>
-    <p><a href="modules.html">模块管理</a></p>
-    <p><a href="people.html">责任人管理</a></p>
-    <p><a href="diagnostics.html">Supabase 连接诊断</a></p>
+    <h2>② 本周计划</h2>
+    <div id="plan-root"></div>
+  </section>
+
+  <section>
+    <h2>③ 生成PPT</h2>
+    <button type="button" id="generate-ppt-btn">生成并下载PPT</button>
+    <p id="generate-result" class="status"></p>
   </section>
 
   <script type="module" src="./index.js"></script>

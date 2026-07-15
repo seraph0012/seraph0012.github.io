@@ -12,6 +12,13 @@ export const createModule = (name) =>
   supabase.from("modules").insert({ name }).select().single().then(unwrap);
 export const deleteModule = (id) =>
   supabase.from("modules").delete().eq("id", id).then(unwrap);
+// "当前模块"标记(2026-07-16新增，见sql/0022)：先把其它行清空，再把目标行设true——
+// is_current上有partial unique index(最多一行为true)，这个顺序保证中间不会经过
+// "两行同时为true"的状态，不会撞约束。
+export const setCurrentModule = async (id) => {
+  await supabase.from("modules").update({ is_current: false }).neq("id", id).then(unwrap);
+  await supabase.from("modules").update({ is_current: true }).eq("id", id).then(unwrap);
+};
 
 // ---- people (责任人配置列表，跟modules同构，供任务创建表单默认预填用) ----
 export const listPeople = () =>
@@ -20,6 +27,10 @@ export const createPerson = (name) =>
   supabase.from("people").insert({ name }).select().single().then(unwrap);
 export const deletePerson = (id) =>
   supabase.from("people").delete().eq("id", id).then(unwrap);
+export const setCurrentPerson = async (id) => {
+  await supabase.from("people").update({ is_current: false }).neq("id", id).then(unwrap);
+  await supabase.from("people").update({ is_current: true }).eq("id", id).then(unwrap);
+};
 
 // ---- meeting_weeks ----
 export const listMeetingWeeks = () =>
@@ -165,12 +176,17 @@ export const listTasksForWeek = (weekId) =>
   supabase.from("tasks").select("*, projects(*, recurring_project_settings(*))").eq("meeting_week_id", weekId).then(unwrap);
 
 // ---- weekly_task_entries ----
+// sort_order是用户在网页上用上/下箭头手动调整的展示顺序(2026-07-15新增，见sql/0021)，
+// 不再是按WBS编号自动排——手动做PPT时"上周未完成"经常排在"本周新增"前面，不一定按编号。
+// nullsFirst:false配合id兜底：万一某条记录漏赋sort_order，排序时自然落到同组末尾，不会
+// 报错或错位到最前面。
 export const listWeeklyTaskEntries = (meetingWeekId, appearsIn) =>
   supabase
     .from("weekly_task_entries")
     .select("*")
     .eq("meeting_week_id", meetingWeekId)
     .eq("appears_in", appearsIn)
+    .order("sort_order", { ascending: true, nullsFirst: false })
     .order("id")
     .then(unwrap);
 export const createWeeklyTaskEntry = (row) =>
@@ -202,11 +218,17 @@ export const countWeeklyTaskEntriesForTask = (taskId) =>
     });
 
 // ---- 按id批量反查任务标题，供weekly-report渲染候选池和已保存条目的任务名 ----
+// 带上task_groups(供taskLabels.js的wbsTexts()拼"任务2级"列文本时查这个任务所在二级
+// 分组的标题——2026-07-16修复：这里原来没select task_groups，导致有三级子任务的场景下
+// "任务2级"列只显示"5.1"这样的裸编号，没有分组标题，是独立于tasks.js树状展示的另一个
+// bug，tasks.js自己另有一套从listProjects()查task_groups的逻辑，不受这次改动影响)。
 export const listTasksByIds = (ids) =>
   ids.length === 0
     ? Promise.resolve([])
     : supabase
         .from("tasks")
-        .select("*, projects(title, level1_number, project_type, recurring_project_settings(title_verb, title_noun))")
+        .select(
+          "*, projects(title, level1_number, project_type, recurring_project_settings(title_verb, title_noun), task_groups(wbs_level2_number, title))"
+        )
         .in("id", ids)
         .then(unwrap);

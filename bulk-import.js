@@ -35,7 +35,7 @@ const TASK_HEADERS = [
   "最终目标交付物", "最终计划完成时间", "预计开始日期", "实际完成时间", "状态",
 ];
 const PROJECT_TYPE_MAP = { 顺序队列: "sequential", 截止日期: "nonsequential" };
-const PROJECT_STATUS_VALUES = ["active", "paused", "completed"];
+const PROJECT_STATUS_MAP = { 进行中: "active", 暂停: "paused", 已完成: "completed" };
 const TASK_STATUS_MAP = { 未启动: "not_started", 进行中: "in_progress", 已完成: "done", 中止: "stopped" };
 
 let modules = [];
@@ -63,9 +63,18 @@ function downloadTemplate() {
     TASK_HEADERS,
     [
       1, "", "", "", "示例任务——完成初稿",
-      "示例模块(请替换成模块管理页面已有的名称)",
-      "示例责任人(请替换成责任人管理页面已有的姓名)",
+      "示例模块(请替换成\"设置\"页面已有的模块名称)",
+      "示例责任人(请替换成\"设置\"页面已有的责任人姓名)",
       "完整初稿", "2026-08-01", "", "", "",
+    ],
+    // 二级+三级示例：哪怕这个二级编号下只有1条三级任务，也要填"二级标题"——只要填了
+    // 三级编号，这个二级就会在任务管理页面显示成一个分组，不填标题会显示成占位符
+    // "(未命名，点详情补充)"，不是留空就没事。
+    [
+      1, 2, "示例二级分组", 1, "示例三级子任务",
+      "示例模块(请替换成\"设置\"页面已有的模块名称)",
+      "示例责任人(请替换成\"设置\"页面已有的责任人姓名)",
+      "子任务交付物", "2026-08-15", "", "", "",
     ],
   ];
   const wb = XLSX.utils.book_new();
@@ -132,9 +141,9 @@ function validateProjects(rows) {
     const title = String(row["标题"]).trim();
     if (!title) rowErrors.push("标题不能为空");
     const statusRaw = String(row["状态"]).trim();
-    const status = statusRaw || "active";
-    if (!PROJECT_STATUS_VALUES.includes(status)) {
-      rowErrors.push(`状态必须是active/paused/completed之一或留空，当前是"${statusRaw}"`);
+    const status = statusRaw ? PROJECT_STATUS_MAP[statusRaw] : "active";
+    if (statusRaw && !status) {
+      rowErrors.push(`状态必须是进行中/暂停/已完成之一或留空，当前是"${statusRaw}"`);
     }
     const deadlineDate = checkDate(row["项目截止日期"], "项目截止日期", rowErrors);
     const targetDeliverable = String(row["项目最终交付物"]).trim() || null;
@@ -193,11 +202,11 @@ function validateTasks(rows, projectItems) {
     const moduleName = String(row["模块"]).trim();
     const moduleMatch = modules.find((m) => m.name === moduleName);
     if (!moduleName) rowErrors.push("模块不能为空");
-    else if (!moduleMatch) rowErrors.push(`模块"${moduleName}"在"模块管理"页面里找不到，请先去建好，或者检查有没有打错字`);
+    else if (!moduleMatch) rowErrors.push(`模块"${moduleName}"在"设置"页面里找不到，请先去建好，或者检查有没有打错字`);
     const ownerName = String(row["责任人"]).trim();
     const ownerMatch = people.find((p) => p.name === ownerName);
     if (!ownerName) rowErrors.push("责任人不能为空");
-    else if (!ownerMatch) rowErrors.push(`责任人"${ownerName}"在"责任人管理"页面里找不到，请先去建好，或者检查有没有打错字`);
+    else if (!ownerMatch) rowErrors.push(`责任人"${ownerName}"在"设置"页面里找不到，请先去建好，或者检查有没有打错字`);
     const targetDeliverable = String(row["最终目标交付物"]).trim();
     if (!targetDeliverable) rowErrors.push("最终目标交付物不能为空");
     const plannedCompletionDate = checkDate(row["最终计划完成时间"], "最终计划完成时间", rowErrors, true);
@@ -219,7 +228,13 @@ function validateTasks(rows, projectItems) {
     }
   }
 
-  // 二级分组标题条件校验：同项目+同二级编号下有多条任务，必须至少一行填了二级标题
+  // 二级分组标题条件校验：只要这个(项目,二级编号)会在tasks.js里被渲染成"分组容器"就
+  // 需要标题——判断条件必须跟tasks.js的level2NodeForTaskList()完全一致：不是"level2Title
+  // 一定,当level2下有>=1条子任务(level2+level3都填了)时也需要，即使只有单独一条三级任务"
+  // (2026-07-16修复：原来的判断条件是group.length>1，漏了"只有1条记录但填了三级编号"这种
+  // 最常见的场景——这种情况下tasks.js照样会把它当分组容器渲染，只是分组里恰好只有一个
+  // 子任务，之前误判成"不需要标题"，导致task_groups行没被创建，树状展示里2级标题显示成
+  // 占位符"(未命名，点详情补充)"，看起来就像"2级标题没有被正确导入"）。
   const groups = new Map();
   for (const it of items) {
     if (it.level2 == null) continue;
@@ -228,12 +243,13 @@ function validateTasks(rows, projectItems) {
     groups.get(key).push(it);
   }
   for (const [key, group] of groups) {
-    if (group.length > 1 && !group.some((it) => it.level2Title)) {
+    const isContainer = !(group.length === 1 && group[0].level3 == null);
+    if (isContainer && !group.some((it) => it.level2Title)) {
       const [projectNumber, level2] = key.split("::");
       errors.push({
         sheet: "任务",
         row: group.map((it) => it.excelRow).join(","),
-        messages: [`项目${projectNumber}的二级编号${level2}下有${group.length}条任务，必须至少有一行填"二级标题"`],
+        messages: [`项目${projectNumber}的二级编号${level2}下的任务包含三级编号(会显示成一个分组)，必须至少有一行填"二级标题"`],
       });
     }
   }

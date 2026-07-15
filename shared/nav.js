@@ -1,13 +1,13 @@
 import { supabase } from "./supabaseClient.js";
 
+// 2026-07-16：index.html不再是单独的导航landing page，改成weekly-report.html重命名后的
+// 内容(制作周报直接是默认首页)，"首页"/"制作周报"合并成一条。
 const LINKS = [
-  { href: "index.html", label: "首页" },
-  { href: "weekly-report.html", label: "制作周报" },
+  { href: "index.html", label: "制作周报" },
   { href: "tasks.html", label: "任务管理" },
   { href: "bulk-import.html", label: "批量导入" },
   { href: "meeting-weeks.html", label: "例会日历" },
-  { href: "modules.html", label: "模块管理" },
-  { href: "people.html", label: "责任人管理" },
+  { href: "settings.html", label: "设置" },
 ];
 
 export function renderNav() {

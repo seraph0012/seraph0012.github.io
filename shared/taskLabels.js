@@ -45,13 +45,22 @@ export async function buildLabelMap(taskIds) {
 // 分别有自己的拼接代码，recurring还额外用full_number列；现在wbs_level2/3_number字段名和
 // 语义完全统一，可以共用一份）。level2为空(项目本身就是任务)时，标题放进level2Text，
 // 编号只用level1(此前这个分支在旧代码里被漏掉过，会拼出"10.null"，这次一并修正)。
-function wbsTexts(level1, level2, level3, projectTitle, rowTitle) {
+// 2026-07-16修复：level3!=null(这个二级下有三级子任务)时，level2Text原来只有裸编号
+// "5.1"、没有标题文字——task_groups里存的二级标题从来没被这个函数用上，是跟tasks.js
+// 树状展示完全独立的另一处bug(tasks.js自己另外查task_groups，那边一直是对的)。现在
+// groupTitle参数就是从task_groups反查到的这个二级分组的标题，跟tasks.js的
+// level2NodeForTaskList()保持一致的占位文案。
+function wbsTexts(level1, level2, level3, projectTitle, rowTitle, groupTitle) {
   const level1Text = `${level1}.${projectTitle}`;
   if (level2 == null) {
     return { level1Text, level2Text: `${level1} ${rowTitle}`, level3Text: "" };
   }
   if (level3 != null) {
-    return { level1Text, level2Text: `${level1}.${level2}`, level3Text: `${level1}.${level2}.${level3} ${rowTitle}` };
+    return {
+      level1Text,
+      level2Text: `${level1}.${level2} ${groupTitle || "(未命名，点详情补充)"}`,
+      level3Text: `${level1}.${level2}.${level3} ${rowTitle}`,
+    };
   }
   return { level1Text, level2Text: `${level1}.${level2} ${rowTitle}`, level3Text: "" };
 }
@@ -66,11 +75,15 @@ export async function buildSourceDetailMap(taskIds) {
   const map = new Map();
   for (const t of await listTasksByIds(taskIds)) {
     const level1 = t.projects.level1_number;
+    const groupTitle =
+      t.wbs_level3_number != null
+        ? (t.projects.task_groups || []).find((g) => g.wbs_level2_number === t.wbs_level2_number)?.title
+        : undefined;
     map.set(t.id, {
       level1,
       level2: t.wbs_level2_number,
       level3: t.wbs_level3_number,
-      ...wbsTexts(level1, t.wbs_level2_number, t.wbs_level3_number, t.projects.title, t.title),
+      ...wbsTexts(level1, t.wbs_level2_number, t.wbs_level3_number, t.projects.title, t.title, groupTitle),
       targetDeliverable: t.target_deliverable,
       sourceStatus: SOURCE_STATUS_LABEL[t.status] ?? t.status ?? "",
       completionDate: t.planned_completion_date,
@@ -97,12 +110,24 @@ export async function buildSourceDetailMap(taskIds) {
 // 不加"手动强制标最终完成"的兜底，对不上就是要求这周的交付物文字必须原样等于最终目标交付物。
 const STATUS_FOR_COMPLETION = { 已完成: "done", 未完成: "in_progress", 中止: "stopped", 未启动: "not_started" };
 
-export async function syncTaskStatus(taskId, completionStatus, { isFinal = true } = {}) {
+// 纯函数版本，抽出来单独导出——2026-07-16用户反馈"总体完成情况"这一列保存后不会在页面上
+// 刷新(逻辑其实一直在正确执行，只是DOM没跟着更新，看起来像"没有自动判断")。summarySection.js
+// 保存成功后要在本地立刻把这一列的显示值算出来刷新(不想为了刷新这一个字段专门重新查一次
+// 数据库)，必须跟syncTaskStatus()写库时用的是同一套判断逻辑，不能自己另外抄一份、以后两边
+// 改一边忘了改另一边——所以把"给定完成情况+isFinal，算出最终应该同步成什么status"这部分
+// 抽成独立的纯函数，syncTaskStatus()和summarySection.js都调用它。
+export function computeSyncedTaskStatus(completionStatus, { isFinal = true } = {}) {
   let target = STATUS_FOR_COMPLETION[completionStatus];
-  if (!target || taskId == null) return;
+  if (!target) return null;
   if (completionStatus === "已完成" && !isFinal) {
     target = "in_progress";
   }
+  return target;
+}
+
+export async function syncTaskStatus(taskId, completionStatus, opts = {}) {
+  const target = computeSyncedTaskStatus(completionStatus, opts);
+  if (!target || taskId == null) return;
   const today = new Date().toISOString().slice(0, 10);
   await updateTask(taskId, { status: target, actual_completion_date: target === "done" ? today : null });
 }
