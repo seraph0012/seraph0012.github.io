@@ -14,6 +14,7 @@ import {
   buildSourceDetailMap,
   listAllActiveCandidates,
   taskCandidateFields,
+  wbsNumber,
 } from "./taskLabels.js";
 import { dateWithWeekday, weekdayLabel } from "./dateUtils.js";
 import { validatePlanEntry } from "./entryValidation.js";
@@ -654,9 +655,12 @@ export function mountPlanSection(root, { allModules, allPeople }) {
 
   // 遍历当前表格里所有行，把显示的值一次性批量提交——不逐字段自动保存，改成"填完点保存"
   // 的模式(2026-07-14用户明确要求)。被"锁定本周计划"按钮和独立的"保存"按钮共用。
-  // 2026-07-20新增审核功能：写库前先跑一遍entryValidation.js的规则校验，有问题就标红对应
-  // 输入框/列、不写库、直接throw——校验规则本身(必填/用时非负/日期先后顺序/日期范围/
-  // 任务状态冲突/跨页面字段缺失)见tools/.claude/plans/plan-audit-rules-v1.md。
+  // 2026-07-20新增审核功能：写库前先跑一遍entryValidation.js的规则校验，校验不过的行标红
+  // 对应输入框/列+不写库；校验通过的行照常保存——不因为某一行有错就把其它已经填好的行也
+  // 一起拦住(2026-07-20用户反馈：避免"改了好几行，其中一行有个小错，结果全部没保存"这种
+  // 丢填写进度的情况)。只要有任意一行没通过，最后仍然throw，"锁定"按钮的调用方会因此
+  // 中止锁定流程(这周还没完全弄对，不该被标记为定稿)。校验规则本身(必填/用时非负/日期
+  // 先后顺序/日期范围/任务状态冲突/跨页面字段缺失)见tools/.claude/plans/plan-audit-rules-v1.md。
   async function saveAllPlanRows() {
     const resultEl = root.querySelector(".save-plan-result");
     const rows = [...root.querySelectorAll(".plan-tbody tr[data-entry-id]")];
@@ -670,18 +674,21 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     const taskIds = rows.map((tr) => Number(tr.dataset.taskId));
     const detailMap = await buildSourceDetailMap(taskIds);
 
-    // 2026-07-20用户反馈：只标红+报"N处错误"，看不出具体错在哪、该怎么改（尤其像"交付物
-    // 跟目标一致但没选已完成"这种一眼看不出来该改哪边的错误）——除了标红，还要把每条错误
-    // 的具体原因列出来，用任务标题(直接读已经渲染好的.task-col文本)定位是哪一行，同时把
-    // 原因写进对应输入框的title属性(hover能看到)。
+    // 2026-07-20用户反馈：①只标红+报"N处错误"，看不出具体错在哪——除了标红，还要把每条
+    // 错误的具体原因列出来，把原因也写进对应输入框的title属性(hover能看到)；②错误提示不
+    // 用重复整条任务描述，用裸编号(wbsNumber，比如"80.3")定位是哪一行就够了，措辞要简洁；
+    // ③校验没通过的行不保存，但不能连累其它没问题的行——这里先分好"能保存"和"不能保存"
+    // 两组，再各自处理。
+    const validRows = [];
     const problemLines = [];
     for (const tr of rows) {
       const detail = detailMap.get(Number(tr.dataset.taskId)) || {};
       const errors = validatePlanEntry(tr, detail);
-      if (errors.length === 0) continue;
-      // 一个项目下常有多个任务(2/3级)，只取第一个.task-col(项目名/1级)分辨不出是哪一条——
-      // 拼上所有非空的.task-col(1/2/3级)才能唯一定位到具体任务。
-      const label = [...tr.querySelectorAll(".task-col")].map((td) => td.textContent).filter(Boolean).join(" / ") || "(未知任务)";
+      if (errors.length === 0) {
+        validRows.push(tr);
+        continue;
+      }
+      const label = wbsNumber(detail.level1, detail.level2, detail.level3);
       for (const { field, message } of errors) {
         const el = tr.querySelector(`.${field}`);
         if (el) {
@@ -691,14 +698,9 @@ export function mountPlanSection(root, { allModules, allPeople }) {
         problemLines.push(`${label}：${message}`);
       }
     }
-    if (problemLines.length > 0) {
-      resultEl.textContent = `保存失败，请修正以下${problemLines.length}处（已用红色标出对应位置，鼠标悬停也能看到）：\n${problemLines.join("\n")}`;
-      resultEl.className = "save-plan-result status error";
-      throw new Error("校验未通过");
-    }
 
     try {
-      for (const tr of rows) {
+      for (const tr of validRows) {
         const entryId = Number(tr.dataset.entryId);
         await updateWeeklyTaskEntry(entryId, {
           deliverable_this_week: tr.querySelector(".f-deliverable").value || null,
@@ -710,20 +712,30 @@ export function mountPlanSection(root, { allModules, allPeople }) {
           highlight: tr.querySelector(".f-highlight").checked,
         });
       }
-      resultEl.textContent = `已保存 ${rows.length} 条`;
-      resultEl.className = "save-plan-result status ok";
-      try {
-        const missing = await checkUnscheduledIncomplete();
-        if (missing.length > 0) {
-          resultEl.textContent += `｜提醒：以下未完成任务本周计划里没有安排——${missing.map((c) => c.label).join("、")}`;
-        }
-      } catch {
-        // 这条提醒失败不影响已经保存成功的结果，静默忽略
-      }
     } catch (err) {
-      resultEl.textContent = `保存失败：${err.message}`;
+      resultEl.textContent = `已保存部分行时失败：${err.message}`;
       resultEl.className = "save-plan-result status error";
       throw err;
+    }
+
+    if (problemLines.length > 0) {
+      resultEl.textContent =
+        validRows.length === 0
+          ? `保存失败，${problemLines.length}处未通过校验（已标红，鼠标悬停可看原因）：\n${problemLines.join("\n")}`
+          : `已保存${validRows.length}条，另有${problemLines.length}处未通过校验没有保存（已标红，鼠标悬停可看原因）：\n${problemLines.join("\n")}`;
+      resultEl.className = "save-plan-result status error";
+      throw new Error("部分行未通过校验");
+    }
+
+    resultEl.textContent = `已保存 ${validRows.length} 条`;
+    resultEl.className = "save-plan-result status ok";
+    try {
+      const missing = await checkUnscheduledIncomplete();
+      if (missing.length > 0) {
+        resultEl.textContent += `｜提醒：以下未完成任务本周计划里没有安排——${missing.map((c) => c.label).join("、")}`;
+      }
+    } catch {
+      // 这条提醒失败不影响已经保存成功的结果，静默忽略
     }
   }
 

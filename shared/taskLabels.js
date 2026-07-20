@@ -25,8 +25,10 @@ export const SOURCE_STATUS_LABEL = {
 };
 
 // 为空=项目本身就是任务，没有再往下分解；跟tasks.js的wbsLabel()是同一套规则，这里单独
-// 实现一份是因为输入形状不同(这里要顺带拼标题文本)，保持两处逻辑一致即可。
-function wbsNumber(level1, level2, level3) {
+// 实现一份是因为输入形状不同(这里要顺带拼标题文本)，保持两处逻辑一致即可。导出给
+// planSection.js/summarySection.js的审核错误提示复用(2026-07-20，只需要裸编号定位是哪条
+// 任务出错，不需要再重复一遍完整的任务描述)。
+export function wbsNumber(level1, level2, level3) {
   if (level2 == null) return `${level1}`;
   return level3 != null ? `${level1}.${level2}.${level3}` : `${level1}.${level2}`;
 }
