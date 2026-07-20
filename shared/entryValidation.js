@@ -112,20 +112,26 @@ export function validateSummaryEntry(tr, detail, matchingPlanEntry) {
   // 等于目标时不会被自动纠正。这里拦下来，让用户自己确认要不要把完成情况改过来（不自动
   // 帮改，避免用户诧异"我明明选了未完成怎么就变了"）。
   // 这条错误本身有两种可能的修法(交付材料填错了 / 完成情况选错了)，光标红"完成情况"这一格
-  // 看不出该往哪个方向改——用"未完成原因/整改措施等字段有没有内容"作判断依据给出更具体的
-  // 提示：这些字段一般只有真心觉得没做完的时候才会认真填，如果已经填了内容，更可能是交付
-  // 材料抄错/忘改；如果什么都没填，更可能是选完成情况时漏选了"已完成"。
+  // 看不出该往哪个方向改——检查未完成原因/整改措施/风险说明这三个自由文本字段(值本身没
+  // 因为disabled就被清空，仍然读得到)实际填了什么，直接把内容摘出来放进提示文字：真的填了
+  // 就说明这些字段被认真写过、任务大概率还没做完，矛盾更可能出在交付材料上；一个字都没填
+  // 就说明这次很可能只是漏选了"已完成"。不是"填了就选A、没填就选B"这种固定两句话模板，
+  // 是把实际读到的字段内容原样摘出来给用户核对。
   if (status && status !== "已完成" && targetDeliverable && deliverable === targetDeliverable) {
-    const hasIncompleteNotes = ["f-reason", "f-rectify", "f-risk", "f-risk-note"].some(
-      (cls) => (tr.querySelector(`.${cls}`)?.value || "").trim() !== ""
-    );
-    const hint = hasIncompleteNotes
-      ? "已经填了未完成原因/整改措施等内容，更可能是本周交付材料填错了——建议改成能反映本周实际进度的描述，不要跟最终目标交付物写成一样的"
-      : "未完成原因等字段都是空的，更可能是完成情况选漏了——如果这项工作确实已经做完，请把完成情况改选'已完成'";
-    errors.push({
-      field: "f-status",
-      message: `本周交付材料与最终目标交付物完全一致，但完成情况未选"已完成"：${hint}`,
-    });
+    const NOTE_FIELD_SPECS = [
+      ["f-reason", "未完成原因"],
+      ["f-rectify", "整改措施"],
+      ["f-risk-note", "风险说明"],
+    ];
+    const filledNotes = NOTE_FIELD_SPECS.map(([cls, label]) => {
+      const v = (tr.querySelector(`.${cls}`)?.value || "").trim();
+      return v ? `${label}"${v.length > 15 ? v.slice(0, 15) + "…" : v}"` : null;
+    }).filter(Boolean);
+    const message =
+      filledNotes.length > 0
+        ? `本周交付材料与最终目标交付物完全一致，但完成情况未选"已完成"——你填了${filledNotes.join("、")}，这些内容通常只有真没做完时才会写，矛盾更可能出在交付材料：建议把交付材料改成能反映本周实际进度的描述，不要跟最终目标交付物写成一样的`
+        : `本周交付材料与最终目标交付物完全一致，但完成情况未选"已完成"——未完成原因/整改措施/风险说明都是空的，更像是漏选了完成情况：如果这项工作确实已经做完，请把完成情况改选"已完成"`;
+    errors.push({ field: "f-status", message });
   }
 
   // E3/E4：交付材料是否跟这一周计划里写的交付物一致，是判断"这周该做的做完了没有"的另一个
