@@ -104,6 +104,42 @@ export function replaceTextKeepFormat(tcEl, newText) {
   }
 }
 
+// ---- 多行文本（"重点工作完成情况"这类粘贴进来的内容要真正换行显示，不能挤成一行）----
+// 按\n切分text，为每一行生成一个独立的<a:p>：段落属性(pPr)和首个run的格式(rPr)从原有
+// 第一个段落clone过来（保留模板的字体/字号），替换掉txBody原有的全部段落。空文本时会生成
+// 一个只含空文本的段落（不能把txBody清空，否则单元格的文本结构会坏）。
+export function replaceMultilineTextKeepFormat(tcEl, text) {
+  const doc = tcEl.ownerDocument;
+  let txBody = tcEl.getElementsByTagNameNS(NS_A, "txBody")[0];
+  if (!txBody) {
+    txBody = el(doc, "a:txBody");
+    txBody.appendChild(el(doc, "a:bodyPr"));
+    const tcPr = getTcPr(tcEl);
+    tcEl.insertBefore(txBody, tcPr || null);
+  }
+  const ps = Array.from(txBody.getElementsByTagNameNS(NS_A, "p"));
+  const p0 = ps[0] || null;
+  const pPrTemplate = p0 ? p0.getElementsByTagNameNS(NS_A, "pPr")[0] : null;
+  const r0 = p0 ? p0.getElementsByTagNameNS(NS_A, "r")[0] : null;
+  const rPrTemplate = r0 ? r0.getElementsByTagNameNS(NS_A, "rPr")[0] : null;
+
+  const lines = (text ?? "").split("\n");
+  const newPs = lines.map((line) => {
+    const p = el(doc, "a:p");
+    if (pPrTemplate) p.appendChild(pPrTemplate.cloneNode(true));
+    const r = el(doc, "a:r");
+    if (rPrTemplate) r.appendChild(rPrTemplate.cloneNode(true));
+    const t = el(doc, "a:t");
+    t.textContent = line;
+    r.appendChild(t);
+    p.appendChild(r);
+    return p;
+  });
+
+  for (const p of ps) p.parentNode.removeChild(p);
+  for (const p of newPs) txBody.appendChild(p);
+}
+
 // ---- 填色 ----
 // 注意：不能用getElementsByTagNameNS找tcPr的填充子元素——它会递归到lnL/lnR/lnT/lnB
 // 边框线里各自嵌套的<a:solidFill>（边框颜色，不是单元格底色），错误地把边框色当成
@@ -123,17 +159,6 @@ export function setCellFillWhite(tcEl) {
   const solidFill = el(doc, "a:solidFill");
   const srgb = el(doc, "a:srgbClr");
   srgb.setAttribute("val", "FFFFFF");
-  solidFill.appendChild(srgb);
-  tcPr.appendChild(solidFill);
-}
-// 对应 highlight_cell()：浅灰色 RGB(210,210,210)，用于REVIEW表复核列
-export function setCellFillGrey(tcEl) {
-  const doc = tcEl.ownerDocument;
-  const tcPr = ensureTcPr(tcEl);
-  clearExistingFill(tcPr);
-  const solidFill = el(doc, "a:solidFill");
-  const srgb = el(doc, "a:srgbClr");
-  srgb.setAttribute("val", "D2D2D2");
   solidFill.appendChild(srgb);
   tcPr.appendChild(solidFill);
 }
@@ -359,13 +384,17 @@ function setParagraphText(pEl, newText) {
   }
 }
 
-// ---- REVIEW表签字列清空（对应handle_summary_review）----
-export function clearReviewSlide(slideDoc) {
+// ---- REVIEW表：cells[4]"重点工作完成情况"填入用户粘贴的文字（对应handle_summary_review）；
+// cells[5]签字列清空。2026-07-20：cells[4]原来固定清空+涂灰(setCellFillGrey，旧脚本"提醒
+// 手动填写"的遗留约定)，现在有了meeting_weeks.review_key_points真实数据源，不再需要这个
+// 视觉提醒，统一改回白色底；没有文字时(keyPointsText为空)效果等价于以前的"清空"，只是底色
+// 从灰变白。
+export function clearReviewSlide(slideDoc, keyPointsText = "") {
   const table = findTable(slideDoc);
   if (!table) return;
   const rows = getRows(table);
   const cells = getCells(rows[1]);
-  replaceTextKeepFormat(cells[4], "");
-  setCellFillGrey(cells[4]);
+  replaceMultilineTextKeepFormat(cells[4], keyPointsText);
+  setCellFillWhite(cells[4]);
   replaceTextKeepFormat(cells[5], "");
 }

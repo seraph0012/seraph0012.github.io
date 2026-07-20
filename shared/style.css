@@ -57,6 +57,13 @@ td.readonly-col { color: #555; }
 .locked-date { color: #888; }
 .row-highlight { outline: 2px solid #e8a33d; background: #fff8e1; }
 
+/* PPT预览(shared/tablePreview.js，2026-07-20新增)：明显加个边框区分"这是预览不是真实
+   PPT"，表格本身用最简单的border-collapse，不复用.report-table那套固定列宽(预览表格
+   列数少、不需要跟真实计划/总结表格对齐宽度)。 */
+.preview-box { border: 2px dashed #888; padding: 12px; margin-top: 8px; }
+.preview-table { border-collapse: collapse; width: 100%; margin-bottom: 12px; }
+.preview-table th, .preview-table td { border: 1px solid #ccc; padding: 4px 6px; font-size: 0.9em; text-align: left; }
+
 h1 { font-size: 22px; margin: 24px 0 16px; }
 h2 { font-size: 16px; }
 

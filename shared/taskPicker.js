@@ -30,6 +30,7 @@ export function renderTaskPicker(container, candidates, onPick) {
       <label class="picker-level3-wrap" hidden>3级 <select class="picker-level3"></select></label>
       <button type="button" class="picker-cascade-add" disabled>添加此任务</button>
     </div>
+    <p class="picker-preview status"></p>
     <div class="picker-search-wrap" style="margin-top:6px;">
       <input type="text" class="picker-search" placeholder="或者按编号/标题搜索..." style="min-width:320px" />
       <div class="picker-results"></div>
@@ -43,6 +44,7 @@ export function renderTaskPicker(container, candidates, onPick) {
   const level2Wrap = container.querySelector(".picker-level2-wrap");
   const level3Wrap = container.querySelector(".picker-level3-wrap");
   const addBtn = container.querySelector(".picker-cascade-add");
+  const previewEl = container.querySelector(".picker-preview");
 
   level1Select.innerHTML += grouped
     .map(([pid, p]) => `<option value="${pid}">[${p.level1_number}] ${p.title}</option>`)
@@ -50,9 +52,12 @@ export function renderTaskPicker(container, candidates, onPick) {
 
   let selectedCandidate = null;
 
+  // 2026-07-20用户反馈：级联选到只剩编号，看不出具体选中的是哪个任务——用candidates已经
+  // 算好的label(可读的"来源类型 [编号] 项目名 / 任务名")直接展示，不用再查一次。
   function setSelected(c) {
     selectedCandidate = c || null;
     addBtn.disabled = !selectedCandidate;
+    previewEl.textContent = selectedCandidate ? `将添加：${selectedCandidate.label}` : "";
   }
 
   // 二级下拉：如果这个项目下有一条"项目本身就是候选"(level2为空)，加一个"(项目本身)"选项；

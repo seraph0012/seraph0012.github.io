@@ -24,6 +24,14 @@ import {
 } from "./shared/db.js";
 import { cacheFirst } from "./shared/localCache.js";
 import { SOURCE_STATUS_LABEL, PROJECT_TYPE_LABEL } from "./shared/taskLabels.js";
+import {
+  computeNextNumber,
+  nextUnusedWeek,
+  generateInstanceTitle,
+  generateInstanceDeliverable,
+  monthWeekLabel,
+  wbsLabel,
+} from "./shared/recurringNumbering.js";
 
 const session = await requireAuth();
 if (!session) {
@@ -40,13 +48,6 @@ let allWeeks = []; // 过滤掉is_normal=false，循环任务编号算法用
 let projects = []; // 2026-07-14统一任务模型：sequential/nonsequential/recurring三种project_type都在这一个数组里
 const openDetailKeys = new Set();
 if (highlightKey) openDetailKeys.add(highlightKey);
-
-// level2为空代表"项目本身就是任务，没有再往下分解"(比如临时的一次性计划外工作)，
-// 这时候编号就是纯"5"而不是"5.2"
-function wbsLabel(level1, level2, level3) {
-  if (level2 == null) return `${level1}`;
-  return level3 != null ? `${level1}.${level2}.${level3}` : `${level1}.${level2}`;
-}
 
 function moduleOptionsHtml(selectedId) {
   return (
@@ -101,53 +102,9 @@ async function confirmAndCascadeDelete({ label, taskIds, deleteFn }) {
   return true;
 }
 
-// ---------------- 循环任务编号/候选周算法 ----------------
-
-// weekly频率 - 同月内下一次实例level3=上一实例level3+1(跳过的周顺延递补，不留空号)；
-// 跨自然月则level2+1、level3重置为1，且无论中间跳过几个月都只+1(顺延式)。
-// monthly频率则level2=上一实例level2+1，不使用level3。
-function computeNextNumber(project, instances, targetWeek) {
-  const frequency = project.recurring_project_settings.frequency;
-  if (instances.length === 0) {
-    return { level2: 1, level3: frequency === "monthly" ? null : 1 };
-  }
-  const sorted = [...instances].sort((a, b) => {
-    const wa = allWeeks.find((w) => w.id === a.meeting_week_id);
-    const wb = allWeeks.find((w) => w.id === b.meeting_week_id);
-    return new Date((wa ?? {}).natural_week_start || 0) - new Date((wb ?? {}).natural_week_start || 0);
-  });
-  const last = sorted[sorted.length - 1];
-  const lastWeek = allWeeks.find((w) => w.id === last.meeting_week_id);
-
-  if (frequency === "monthly") {
-    return { level2: last.wbs_level2_number + 1, level3: null };
-  }
-  const sameMonth = lastWeek.calendar_month === targetWeek.calendar_month;
-  if (sameMonth) {
-    return { level2: last.wbs_level2_number, level3: last.wbs_level3_number + 1 };
-  }
-  return { level2: last.wbs_level2_number + 1, level3: 1 };
-}
-
-// 循环任务项目不再存"起始例会周"这个字段(2026-07-10跟用户确认去掉——这个信息只在创建
-// 项目时用一次，创建时就直接生成第一个实例，之后"下一个实例"永远只看"已有实例里最早的
-// 那一个"往后找，不需要项目额外记一个开始日期)
-function nextUnusedWeek(instances) {
-  if (instances.length === 0) return allWeeks[0] ?? null;
-  const usedWeekIds = new Set(instances.map((i) => i.meeting_week_id));
-  const usedWeeksSorted = instances
-    .map((i) => allWeeks.find((w) => w.id === i.meeting_week_id))
-    .filter(Boolean)
-    .sort((a, b) => new Date(a.natural_week_start) - new Date(b.natural_week_start));
-  const firstWeek = usedWeeksSorted[0];
-  if (!firstWeek) return null;
-  const sorted = [...allWeeks]
-    .filter((w) => new Date(w.natural_week_start) >= new Date(firstWeek.natural_week_start))
-    .sort((a, b) => new Date(a.natural_week_start) - new Date(b.natural_week_start));
-  return sorted.find((w) => !usedWeekIds.has(w.id));
-}
-
 // ---------------- 新建任务表单 ----------------
+// 循环任务编号/候选周算法(computeNextNumber/nextUnusedWeek)已抽到shared/recurringNumbering.js
+// (2026-07-20，供"制作周报"页面的新建任务功能复用)，这里调用时显式传入allWeeks。
 
 function ownerOptionsHtml() {
   const seqOpts = projects
@@ -259,22 +216,6 @@ function onLevel2Change(sel) {
 
 document.getElementById("wbs-level2-select").addEventListener("change", () => onLevel2Change(parseOwnerValue()));
 
-// 循环任务标题/最终交付物按当次生成的月/周动态拼出来——项目只存"动词前缀(title_verb)+
-// 名词部分(title_noun)"，比如"制作"+"周例会PPT"，每次生成实例时现算出"7月第4周"这种限定语
-// 插进去。monthly频率没有level3(月内不再细分)，限定语只用月份。交付物不带动词前缀。
-// "第几周"用的是level3(这个循环任务在本月内的第几次执行，顺延递补算法算出来的)，不是
-// 自然日历的week_index_in_month。
-function monthWeekLabel(targetWeek, frequency, level3) {
-  const month = Number(targetWeek.calendar_month.slice(5, 7));
-  return frequency === "monthly" ? `${month}月` : `${month}月第${level3}周`;
-}
-function generateInstanceTitle(titleVerb, titleNoun, frequency, targetWeek, level3) {
-  return `${titleVerb}${monthWeekLabel(targetWeek, frequency, level3)}${titleNoun}`;
-}
-function generateInstanceDeliverable(titleVerb, titleNoun, frequency, targetWeek, level3) {
-  return `${monthWeekLabel(targetWeek, frequency, level3)}${titleNoun}`;
-}
-
 function refreshRecurringPreview(projectId) {
   const p = projects.find((x) => x.id === projectId);
   const previewEl = document.getElementById("recurring-instance-preview");
@@ -286,13 +227,13 @@ function refreshRecurringPreview(projectId) {
     return;
   }
   const s = p.recurring_project_settings;
-  const targetWeek = nextUnusedWeek(p.tasks);
+  const targetWeek = nextUnusedWeek(p.tasks, allWeeks);
   if (!targetWeek) {
     previewEl.textContent = "没有更多可用的例会周了，请先在例会日历里预生成更多周";
     previewEl.className = "status error";
     return;
   }
-  const { level2, level3 } = computeNextNumber(p, p.tasks, targetWeek);
+  const { level2, level3 } = computeNextNumber(p, p.tasks, targetWeek, allWeeks);
   const fullNumber = wbsLabel(p.level1_number, level2, level3);
   const title = generateInstanceTitle(s.title_verb, s.title_noun, s.frequency, targetWeek, level3);
   const deliverable = generateInstanceDeliverable(s.title_verb, s.title_noun, s.frequency, targetWeek, level3);
@@ -463,9 +404,9 @@ async function generateNextInstance(projectId) {
     throw new Error("该循环任务详情还在加载，请稍等片刻再提交");
   }
   const s = p.recurring_project_settings;
-  const targetWeek = nextUnusedWeek(p.tasks);
+  const targetWeek = nextUnusedWeek(p.tasks, allWeeks);
   if (!targetWeek) throw new Error("没有更多可用的例会周了，请先在例会日历里预生成更多周");
-  const { level2, level3 } = computeNextNumber(p, p.tasks, targetWeek);
+  const { level2, level3 } = computeNextNumber(p, p.tasks, targetWeek, allWeeks);
   await addTask(p.id, {
     meeting_week_id: targetWeek.id,
     wbs_level2_number: level2,

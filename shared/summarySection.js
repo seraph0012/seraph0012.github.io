@@ -74,6 +74,13 @@ const TEMPLATE = `
       <button type="button" class="unlock-cancel-btn secondary">取消</button>
     </form>
 
+    <div class="review-key-points-block">
+      <h3>重点工作完成情况</h3>
+      <textarea class="review-key-points" rows="4" placeholder="从工作群例会纪要粘贴，如：&#10;1）重点工作1：未完成。已部分完成xxx，还有yyy未完成。&#10;2）重点工作2：已完成。"></textarea>
+      <button type="button" class="review-key-points-save">保存</button>
+      <p class="review-key-points-result status"></p>
+    </div>
+
     <div class="unplanned-block">
       <h3>记录计划外完成的任务</h3>
       <div class="unplanned-picker"></div>
@@ -197,7 +204,27 @@ export function mountSummarySection(root, { allModules, allPeople }) {
     }
     statusEl.textContent = text;
     statusEl.className = locked ? "lock-status status warn" : "lock-status status";
+    root.querySelector(".review-key-points").disabled = locked;
+    root.querySelector(".review-key-points-save").disabled = locked;
   }
+
+  async function saveReviewKeyPoints() {
+    const resultEl = root.querySelector(".review-key-points-result");
+    const text = root.querySelector(".review-key-points").value;
+    const updated = await updateMeetingWeekFields(week.id, { review_key_points: text || null });
+    Object.assign(week, updated);
+    if (resultEl) {
+      resultEl.textContent = "已保存";
+      resultEl.className = "review-key-points-result status ok";
+    }
+  }
+  root.querySelector(".review-key-points-save").addEventListener("click", () => {
+    saveReviewKeyPoints().catch((err) => {
+      const resultEl = root.querySelector(".review-key-points-result");
+      resultEl.textContent = `保存失败：${err.message}`;
+      resultEl.className = "review-key-points-result status error";
+    });
+  });
 
   async function validateSummaryBeforeLock() {
     const entries = await listWeeklyTaskEntries(week.id, "summary");
@@ -219,11 +246,13 @@ export function mountSummarySection(root, { allModules, allPeople }) {
 
   root.querySelector(".lock-btn").addEventListener("click", async () => {
     // 锁定是最终确认动作，点它前先把表格里当前显示的值(不管点没点过"保存")落库一遍，
-    // 避免"改了字段但忘了点保存，一锁定这些改动就跟着旧数据被冲掉"
+    // 避免"改了字段但忘了点保存，一锁定这些改动就跟着旧数据被冲掉"——重点工作文本框
+    // 同理，2026-07-20新增，一并落库。
     try {
       await saveAllSummaryRows();
+      await saveReviewKeyPoints();
     } catch {
-      return; // 保存失败，错误已经显示在save-summary-result里，不要继续往下锁
+      return; // 保存失败，错误已经显示在对应的status提示里，不要继续往下锁
     }
     const problems = await validateSummaryBeforeLock();
     if (problems.length > 0) {
@@ -500,10 +529,14 @@ export function mountSummarySection(root, { allModules, allPeople }) {
     }
     noWeekMsg.hidden = true;
     body.hidden = false;
+    root.querySelector(".review-key-points").value = week.review_key_points ?? "";
+    root.querySelector(".review-key-points-result").textContent = "";
     renderLockUI();
     await loadSummary();
     await loadUnplannedCandidates();
   }
 
-  return { setWeek };
+  // 2026-07-20新增：供shared/taskCreateSection.js"新建任务"表单创建成功后调用，让新任务
+  // 立刻能在"记录计划外完成的任务"搜索到，不用用户自己点"刷新列表"。
+  return { setWeek, refreshUnplannedCandidates: loadUnplannedCandidates };
 }

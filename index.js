@@ -3,7 +3,10 @@ import { renderNav } from "./shared/nav.js";
 import { listModules, listPeople, listMeetingWeeks } from "./shared/db.js";
 import { mountSummarySection } from "./shared/summarySection.js";
 import { mountPlanSection } from "./shared/planSection.js";
-import { generatePptForWeek } from "./shared/pptGenerate.js";
+import { mountStoppedSection } from "./shared/stoppedSection.js";
+import { mountTaskCreateSection } from "./shared/taskCreateSection.js";
+import { generatePptForWeek, buildReportRows } from "./shared/pptGenerate.js";
+import { renderPreviewTables } from "./shared/tablePreview.js";
 import { cacheFirst } from "./shared/localCache.js";
 
 const session = await requireAuth();
@@ -13,7 +16,8 @@ if (!session) {
 renderNav();
 
 let allModules = [];
-let allWeeks = [];
+let allWeeks = []; // 过滤掉is_normal=false的，周选择器/找上一周用
+let allWeeksRaw = []; // 未过滤，taskCreateSection的"第一次的例会周"下拉用(循环任务起始周可以是任意周)
 let targetWeek = null;
 let previousWeek = null;
 
@@ -37,6 +41,7 @@ function renderWeekInfo() {
 
 let summaryCtrl = null;
 let planCtrl = null;
+let stoppedCtrl = null;
 
 // 切周期间把选择器disabled掉，防止用户在上一次切换的异步查询(loadSummary/loadSavedPlan等)
 // 还没返回时又快速切到另一个周——两次setWeek()的DOM写入会交错，后完成的那次(不一定是
@@ -59,6 +64,9 @@ async function applyWeek(week) {
     renderWeekInfo();
     await summaryCtrl.setWeek(previousWeek);
     await planCtrl.setWeek(targetWeek, previousWeek);
+    await stoppedCtrl.setWeek(targetWeek, previousWeek);
+    // 切周之后预览区还留着上一个周的内容会造成误导，直接清空，用户要看新的周就重新点"预览"
+    document.getElementById("preview-root").innerHTML = "";
   } catch (err) {
     console.error("[index] 切换目标周失败", err);
     infoEl.textContent = `切换周失败：${err.message}（详情见浏览器控制台F12）`;
@@ -67,6 +75,22 @@ async function applyWeek(week) {
     weekSelect.disabled = false;
   }
 }
+
+document.getElementById("preview-ppt-btn").addEventListener("click", async () => {
+  const resultEl = document.getElementById("generate-result");
+  if (!targetWeek) return;
+  resultEl.textContent = "生成预览中...";
+  resultEl.className = "status";
+  try {
+    const reportData = await buildReportRows(targetWeek, previousWeek, allModules);
+    renderPreviewTables(document.getElementById("preview-root"), reportData);
+    resultEl.textContent = "预览已生成（见下方，非精确还原，仅供核对内容）";
+    resultEl.className = "status ok";
+  } catch (err) {
+    resultEl.textContent = `预览失败：${err.message}`;
+    resultEl.className = "status error";
+  }
+});
 
 document.getElementById("generate-ppt-btn").addEventListener("click", async () => {
   const resultEl = document.getElementById("generate-result");
@@ -114,6 +138,7 @@ async function init() {
   } else {
     document.getElementById("summary-root").innerHTML = `<p class="status">加载中...</p>`;
     document.getElementById("plan-root").innerHTML = `<p class="status">加载中...</p>`;
+    document.getElementById("stopped-root").innerHTML = `<p class="status">加载中...</p>`;
     [modules, people, weeks] = await Promise.all([
       modulesCache.freshPromise,
       peopleCache.freshPromise,
@@ -121,10 +146,25 @@ async function init() {
     ]);
   }
   allModules = modules;
+  allWeeksRaw = weeks;
   allWeeks = weeks.filter((w) => w.is_normal !== false);
 
   summaryCtrl = mountSummarySection(document.getElementById("summary-root"), { allModules, allPeople: people });
   planCtrl = mountPlanSection(document.getElementById("plan-root"), { allModules, allPeople: people });
+  stoppedCtrl = mountStoppedSection(document.getElementById("stopped-root"), { allModules });
+  // "新建任务"完整版功能——展开后才会真正查数据(见taskCreateSection.js内部懒加载)，这里
+  // 挂载不额外增加首屏等待。onCreated让新任务立刻能在其它三个区块的"手动搜索/添加"里搜到，
+  // 不用用户自己点各自的"刷新列表"。
+  mountTaskCreateSection(document.getElementById("task-create-root"), {
+    allModules,
+    allPeople: people,
+    allWeeksRaw,
+    onCreated: () => {
+      planCtrl.refreshManualCandidates();
+      summaryCtrl.refreshUnplannedCandidates();
+      stoppedCtrl.refreshCandidates();
+    },
+  });
 
   const weekSelect = document.getElementById("week-select");
   const sorted = [...allWeeks].sort((a, b) => new Date(a.natural_week_start) - new Date(b.natural_week_start));

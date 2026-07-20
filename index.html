@@ -20,6 +20,10 @@
   </section>
 
   <section>
+    <div id="task-create-root"></div>
+  </section>
+
+  <section>
     <h2>① 上周总结</h2>
     <div id="summary-root"></div>
   </section>
@@ -30,9 +34,16 @@
   </section>
 
   <section>
-    <h2>③ 生成PPT</h2>
+    <h2>③ 未启动/中止工作</h2>
+    <div id="stopped-root"></div>
+  </section>
+
+  <section>
+    <h2>④ 生成PPT</h2>
+    <button type="button" id="preview-ppt-btn" class="secondary">预览</button>
     <button type="button" id="generate-ppt-btn">生成并下载PPT</button>
     <p id="generate-result" class="status"></p>
+    <div id="preview-root"></div>
   </section>
 
   <script type="module" src="./index.js"></script>

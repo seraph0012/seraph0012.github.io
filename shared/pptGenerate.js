@@ -75,7 +75,12 @@ function rowFills(highlight, row) {
 // (db.js的listWeeklyTaskEntries已经按这个排好)，不再自动按模块+WBS编号重排。用户反馈
 // 手动做PPT时顺序是当时开会念到的顺序，比如"上周未完成"经常排在"本周新增"前面，不一定
 // 按编号——现在顺序由用户在网页上用上/下箭头控制(planSection.js/summarySection.js)。
-function buildPlanLikeRows(entries, detailMap, moduleNameById) {
+// executionColumnMode: 'date'(默认，PLAN表用，第9列=计划执行截止日期对应星期几) |
+// 'status'(STOPPED表用，2026-07-20新增——STOPPED条目的执行期不是日期，而是任务自身的
+// 当前状态"未启动"/"中止"，从detail.sourceStatus读，跟"总体完成情况"列同一个数据来源)。
+// PLAN/STOPPED两张表结构完全一样，只有这一列取值方式不同，用可选参数复用同一份实现，
+// 避免维护两份几乎相同的拼行代码逐渐分叉。
+function buildPlanLikeRows(entries, detailMap, moduleNameById, { executionColumnMode = "date" } = {}) {
   const sorted = entries;
   const rows = sorted.map((e) => {
     const detail = detailMap.get(e.task_id) || {};
@@ -89,7 +94,7 @@ function buildPlanLikeRows(entries, detailMap, moduleNameById) {
       e.deliverable_this_week || "",
       e.planned_hours != null ? `${e.planned_hours}h` : "",
       weekdayLabel(e.plan_start_date),
-      weekdayLabel(e.execution_deadline),
+      executionColumnMode === "status" ? detail.sourceStatus || "" : weekdayLabel(e.execution_deadline),
       detail.targetDeliverable || "",
       monthDayLabel(detail.completionDate),
       PRIORITY_LABEL[e.priority_quadrant] || "",
@@ -151,9 +156,10 @@ function findSlideDocByTitle(slideDocs, titleText) {
   return null;
 }
 
-// targetWeek的计划 + previousWeek的总结，生成PPT。返回 {blob, filename, planCount, summaryCount,
-// stoppedCount}，调用方负责触发下载（不在这里直接下载，方便以后如果要加预览环节）。
-export async function generatePptForWeek(targetWeek, previousWeek, allModules) {
+// 抽出"查数据+拼rows"这部分，独立导出——generatePptForWeek()和网页预览(shared/tablePreview.js，
+// 由index.js调用)共用同一份数据+格式化逻辑，保证不会出现"预览显示对但实际导出的PPT错"或
+// 反过来的情况(2026-07-20新增，配合"预览PPT"功能)。
+export async function buildReportRows(targetWeek, previousWeek, allModules) {
   const moduleNameById = new Map(allModules.map((m) => [m.id, m.name]));
 
   const [planEntries, summaryEntries, stoppedEntries] = await Promise.all([
@@ -167,7 +173,31 @@ export async function generatePptForWeek(targetWeek, previousWeek, allModules) {
 
   const planRows = buildPlanLikeRows(planEntries, detailMap, moduleNameById);
   const summaryRows = buildSummaryRows(summaryEntries, detailMap, moduleNameById);
-  const stoppedRows = buildPlanLikeRows(stoppedEntries, detailMap, moduleNameById);
+  const stoppedRows = buildPlanLikeRows(stoppedEntries, detailMap, moduleNameById, { executionColumnMode: "status" });
+
+  const meetingDate = new Date(`${targetWeek.meeting_date}T00:00:00Z`);
+  const meetingLine1 = `${meetingDate.getUTCMonth() + 1}月份第${targetWeek.week_index_in_month}周`;
+  const meetingLine2 = `${meetingDate.getUTCFullYear()}年${meetingDate.getUTCMonth() + 1}月${meetingDate.getUTCDate()}日`;
+
+  return {
+    planRows,
+    summaryRows,
+    stoppedRows,
+    meetingLine1,
+    meetingLine2,
+    // "重点工作完成情况"来自previousWeek(被复核的那一周)，见sql/0024
+    reviewKeyPointsText: previousWeek?.review_key_points || "",
+  };
+}
+
+// targetWeek的计划 + previousWeek的总结，生成PPT。返回 {blob, filename, planCount, summaryCount,
+// stoppedCount}，调用方负责触发下载（不在这里直接下载，方便以后如果要加预览环节）。
+export async function generatePptForWeek(targetWeek, previousWeek, allModules) {
+  const { planRows, summaryRows, stoppedRows, meetingLine1, meetingLine2, reviewKeyPointsText } = await buildReportRows(
+    targetWeek,
+    previousWeek,
+    allModules
+  );
 
   const templateBuf = await fetch(TEMPLATE_URL).then((r) => {
     if (!r.ok) throw new Error(`模板文件加载失败（${r.status}），检查 web/assets/weekly_report_template.pptx 是否存在`);
@@ -182,12 +212,9 @@ export async function generatePptForWeek(targetWeek, previousWeek, allModules) {
     slideDocs.push({ path, doc: parseXml(text) });
   }
 
-  const meetingDate = new Date(`${targetWeek.meeting_date}T00:00:00Z`);
-  const line1 = `${meetingDate.getUTCMonth() + 1}月份第${targetWeek.week_index_in_month}周`;
-  const line2 = `${meetingDate.getUTCFullYear()}年${meetingDate.getUTCMonth() + 1}月${meetingDate.getUTCDate()}日`;
   let meetingSlideFound = false;
   for (const { doc } of slideDocs) {
-    if (rewriteMeetingHeader(doc, line1, line2)) {
+    if (rewriteMeetingHeader(doc, meetingLine1, meetingLine2)) {
       meetingSlideFound = true;
       break;
     }
@@ -196,7 +223,7 @@ export async function generatePptForWeek(targetWeek, previousWeek, allModules) {
 
   const reviewDoc = findSlideDocByTitle(slideDocs.map((s) => s.doc), TITLE_REVIEW);
   if (!reviewDoc) throw new Error(`模板里没找到"${TITLE_REVIEW}"幻灯片`);
-  clearReviewSlide(reviewDoc);
+  clearReviewSlide(reviewDoc, reviewKeyPointsText);
 
   const summaryDoc = findSlideDocByTitle(slideDocs.map((s) => s.doc), TITLE_SUMMARY);
   if (!summaryDoc) throw new Error(`模板里没找到"${TITLE_SUMMARY}"幻灯片`);
