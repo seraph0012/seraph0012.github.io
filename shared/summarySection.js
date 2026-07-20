@@ -59,6 +59,13 @@ const TEMPLATE = `
       <p class="review-key-points-result status"></p>
     </div>
 
+    <div class="review-remarks-block">
+      <h3>备注</h3>
+      <textarea class="review-remarks" rows="3" placeholder="对之前计划有改动等需要说明的情况，不是每次都要填"></textarea>
+      <button type="button" class="review-remarks-save">保存</button>
+      <p class="review-remarks-result status"></p>
+    </div>
+
     <div class="unplanned-block">
       <h3>记录计划外完成的任务</h3>
       <div class="unplanned-picker"></div>
@@ -184,6 +191,8 @@ export function mountSummarySection(root, { allModules, allPeople }) {
     statusEl.className = locked ? "lock-status status warn" : "lock-status status";
     root.querySelector(".review-key-points").disabled = locked;
     root.querySelector(".review-key-points-save").disabled = locked;
+    root.querySelector(".review-remarks").disabled = locked;
+    root.querySelector(".review-remarks-save").disabled = locked;
   }
 
   async function saveReviewKeyPoints() {
@@ -204,6 +213,28 @@ export function mountSummarySection(root, { allModules, allPeople }) {
     });
   });
 
+  // 2026-07-20新增：对应PPT"周工作计划复核情况"表格的"备注"列——用户手动填写(跟"重点工作
+  // 完成情况"同一种模式，不是从"解锁编辑"那套强制订正说明(plan_amendment_note/
+  // summary_amendment_note)里自动带过来的，跟用户确认过是两回事：订正说明是"改已锁定数据
+  // 时被迫填的一句话"，这里是"每周都可以自由写、不是每次都要填"的备注，语义更宽松)。
+  async function saveReviewRemarks() {
+    const resultEl = root.querySelector(".review-remarks-result");
+    const text = root.querySelector(".review-remarks").value;
+    const updated = await updateMeetingWeekFields(week.id, { review_remarks: text || null });
+    Object.assign(week, updated);
+    if (resultEl) {
+      resultEl.textContent = "已保存";
+      resultEl.className = "review-remarks-result status ok";
+    }
+  }
+  root.querySelector(".review-remarks-save").addEventListener("click", () => {
+    saveReviewRemarks().catch((err) => {
+      const resultEl = root.querySelector(".review-remarks-result");
+      resultEl.textContent = `保存失败：${err.message}`;
+      resultEl.className = "review-remarks-result status error";
+    });
+  });
+
   root.querySelector(".lock-btn").addEventListener("click", async () => {
     // 锁定是最终确认动作，点它前先把表格里当前显示的值(不管点没点过"保存")落库一遍，
     // 避免"改了字段但忘了点保存，一锁定这些改动就跟着旧数据被冲掉"——重点工作文本框
@@ -214,6 +245,7 @@ export function mountSummarySection(root, { allModules, allPeople }) {
     try {
       await saveAllSummaryRows();
       await saveReviewKeyPoints();
+      await saveReviewRemarks();
     } catch {
       return; // 保存失败，错误已经标红+显示在对应的status提示里，不要继续往下锁
     }
@@ -550,6 +582,8 @@ export function mountSummarySection(root, { allModules, allPeople }) {
     body.hidden = false;
     root.querySelector(".review-key-points").value = week.review_key_points ?? "";
     root.querySelector(".review-key-points-result").textContent = "";
+    root.querySelector(".review-remarks").value = week.review_remarks ?? "";
+    root.querySelector(".review-remarks-result").textContent = "";
     renderLockUI();
     await loadSummary();
     await loadUnplannedCandidates();

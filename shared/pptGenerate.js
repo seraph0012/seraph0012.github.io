@@ -187,17 +187,16 @@ export async function buildReportRows(targetWeek, previousWeek, allModules) {
     meetingLine2,
     // "重点工作完成情况"来自previousWeek(被复核的那一周)，见sql/0024
     reviewKeyPointsText: previousWeek?.review_key_points || "",
+    // "备注"同样来自previousWeek，见sql/0025
+    reviewRemarksText: previousWeek?.review_remarks || "",
   };
 }
 
 // targetWeek的计划 + previousWeek的总结，生成PPT。返回 {blob, filename, planCount, summaryCount,
 // stoppedCount}，调用方负责触发下载（不在这里直接下载，方便以后如果要加预览环节）。
 export async function generatePptForWeek(targetWeek, previousWeek, allModules) {
-  const { planRows, summaryRows, stoppedRows, meetingLine1, meetingLine2, reviewKeyPointsText } = await buildReportRows(
-    targetWeek,
-    previousWeek,
-    allModules
-  );
+  const { planRows, summaryRows, stoppedRows, meetingLine1, meetingLine2, reviewKeyPointsText, reviewRemarksText } =
+    await buildReportRows(targetWeek, previousWeek, allModules);
 
   const templateBuf = await fetch(TEMPLATE_URL).then((r) => {
     if (!r.ok) throw new Error(`模板文件加载失败（${r.status}），检查 web/assets/weekly_report_template.pptx 是否存在`);
@@ -223,7 +222,7 @@ export async function generatePptForWeek(targetWeek, previousWeek, allModules) {
 
   const reviewDoc = findSlideDocByTitle(slideDocs.map((s) => s.doc), TITLE_REVIEW);
   if (!reviewDoc) throw new Error(`模板里没找到"${TITLE_REVIEW}"幻灯片`);
-  clearReviewSlide(reviewDoc, reviewKeyPointsText);
+  clearReviewSlide(reviewDoc, reviewKeyPointsText, reviewRemarksText);
 
   const summaryDoc = findSlideDocByTitle(slideDocs.map((s) => s.doc), TITLE_SUMMARY);
   if (!summaryDoc) throw new Error(`模板里没找到"${TITLE_SUMMARY}"幻灯片`);

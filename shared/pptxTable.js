@@ -385,16 +385,18 @@ function setParagraphText(pEl, newText) {
 }
 
 // ---- REVIEW表：cells[4]"重点工作完成情况"填入用户粘贴的文字（对应handle_summary_review）；
-// cells[5]签字列清空。2026-07-20：cells[4]原来固定清空+涂灰(setCellFillGrey，旧脚本"提醒
-// 手动填写"的遗留约定)，现在有了meeting_weeks.review_key_points真实数据源，不再需要这个
-// 视觉提醒，统一改回白色底；没有文字时(keyPointsText为空)效果等价于以前的"清空"，只是底色
-// 从灰变白。
-export function clearReviewSlide(slideDoc, keyPointsText = "") {
+// cells[5]"备注"填入用户手动填写的说明文字。2026-07-20：cells[4]原来固定清空+涂灰
+// (setCellFillGrey，旧脚本"提醒手动填写"的遗留约定)，现在有了meeting_weeks.review_key_points
+// 真实数据源，不再需要这个视觉提醒，统一改回白色底；没有文字时(keyPointsText为空)效果
+// 等价于以前的"清空"，只是底色从灰变白。cells[5]同日追加了meeting_weeks.review_remarks
+// 数据源，原来固定清空改成填入实际备注文字，不强制改底色(模板原有的底色是主题色而不是
+// 手动涂灰的提醒色，没有理由动它)。
+export function clearReviewSlide(slideDoc, keyPointsText = "", remarksText = "") {
   const table = findTable(slideDoc);
   if (!table) return;
   const rows = getRows(table);
   const cells = getCells(rows[1]);
   replaceMultilineTextKeepFormat(cells[4], keyPointsText);
   setCellFillWhite(cells[4]);
-  replaceTextKeepFormat(cells[5], "");
+  replaceMultilineTextKeepFormat(cells[5], remarksText);
 }

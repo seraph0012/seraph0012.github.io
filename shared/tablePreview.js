@@ -43,9 +43,12 @@ function renderTable(title, headers, rows) {
 // reportData: shared/pptGenerate.js的buildReportRows()返回值，原样传进来即可，保证预览
 // 和实际生成PPT用的是完全同一份数据+格式化结果。
 export function renderPreviewTables(container, reportData) {
-  const { planRows, summaryRows, stoppedRows, meetingLine1, meetingLine2, reviewKeyPointsText } = reportData;
+  const { planRows, summaryRows, stoppedRows, meetingLine1, meetingLine2, reviewKeyPointsText, reviewRemarksText } = reportData;
   const reviewHtml = reviewKeyPointsText
     ? reviewKeyPointsText.split("\n").map((line) => escapeHtml(line)).join("<br />")
+    : "(空)";
+  const remarksHtml = reviewRemarksText
+    ? reviewRemarksText.split("\n").map((line) => escapeHtml(line)).join("<br />")
     : "(空)";
   container.innerHTML = `
     <div class="preview-box">
@@ -53,6 +56,8 @@ export function renderPreviewTables(container, reportData) {
       <p><strong>${escapeHtml(meetingLine1)}</strong><br />${escapeHtml(meetingLine2)}</p>
       <h4>周工作计划复核情况（重点工作完成情况）</h4>
       <p>${reviewHtml}</p>
+      <h4>周工作计划复核情况（备注）</h4>
+      <p>${remarksHtml}</p>
       ${renderTable("周工作总结", SUMMARY_HEADERS, summaryRows)}
       ${renderTable("本周工作计划", PLAN_LIKE_HEADERS, planRows)}
       ${renderTable("未启动/中止工作", PLAN_LIKE_HEADERS, stoppedRows)}
