@@ -137,7 +137,10 @@ button {
 button.secondary { background: #fff; color: #222; }
 button:hover { opacity: 0.85; }
 
-.status { margin-top: 10px; padding: 8px; border-radius: 4px; font-size: 14px; word-break: break-all; }
+/* white-space:pre-line：审核功能(2026-07-20)的保存失败提示是拼了\n的多行文本(每条错误
+   一行，附带任务标题+具体原因)，不加这条会被浏览器默认折叠成一行、\n形同虚设。不影响其他
+   单行status文本(本来就没有\n字符，pre-line对它们没有额外效果)。 */
+.status { margin-top: 10px; padding: 8px; border-radius: 4px; font-size: 14px; word-break: break-all; white-space: pre-line; }
 .status.ok { background: #e6f4ea; color: #1e7e34; }
 .status.warn { background: #fff8e1; color: #8a6d00; }
 .status.error { background: #fdecea; color: #b3261e; }

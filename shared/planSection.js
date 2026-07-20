@@ -663,22 +663,36 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     if (rows.length === 0) return;
     resultEl.textContent = "保存中...";
     resultEl.className = "save-plan-result status";
-    root.querySelectorAll(".field-error").forEach((el) => el.classList.remove("field-error"));
+    root.querySelectorAll(".field-error").forEach((el) => {
+      el.classList.remove("field-error");
+      el.removeAttribute("title");
+    });
     const taskIds = rows.map((tr) => Number(tr.dataset.taskId));
     const detailMap = await buildSourceDetailMap(taskIds);
 
-    let errorCount = 0;
+    // 2026-07-20用户反馈：只标红+报"N处错误"，看不出具体错在哪、该怎么改（尤其像"交付物
+    // 跟目标一致但没选已完成"这种一眼看不出来该改哪边的错误）——除了标红，还要把每条错误
+    // 的具体原因列出来，用任务标题(直接读已经渲染好的.task-col文本)定位是哪一行，同时把
+    // 原因写进对应输入框的title属性(hover能看到)。
+    const problemLines = [];
     for (const tr of rows) {
       const detail = detailMap.get(Number(tr.dataset.taskId)) || {};
       const errors = validatePlanEntry(tr, detail);
-      for (const { field } of errors) {
+      if (errors.length === 0) continue;
+      // 一个项目下常有多个任务(2/3级)，只取第一个.task-col(项目名/1级)分辨不出是哪一条——
+      // 拼上所有非空的.task-col(1/2/3级)才能唯一定位到具体任务。
+      const label = [...tr.querySelectorAll(".task-col")].map((td) => td.textContent).filter(Boolean).join(" / ") || "(未知任务)";
+      for (const { field, message } of errors) {
         const el = tr.querySelector(`.${field}`);
-        if (el) el.classList.add("field-error");
-        errorCount++;
+        if (el) {
+          el.classList.add("field-error");
+          el.title = el.title ? `${el.title}\n${message}` : message;
+        }
+        problemLines.push(`${label}：${message}`);
       }
     }
-    if (errorCount > 0) {
-      resultEl.textContent = `保存失败：${errorCount}处错误，已用红色标出，请修正后重新保存`;
+    if (problemLines.length > 0) {
+      resultEl.textContent = `保存失败，请修正以下${problemLines.length}处（已用红色标出对应位置，鼠标悬停也能看到）：\n${problemLines.join("\n")}`;
       resultEl.className = "save-plan-result status error";
       throw new Error("校验未通过");
     }

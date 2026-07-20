@@ -111,10 +111,20 @@ export function validateSummaryEntry(tr, detail, matchingPlanEntry) {
   // 目标→自动降级成未完成"这一个方向，是分阶段交付的设计），没选已完成但交付物已经严格
   // 等于目标时不会被自动纠正。这里拦下来，让用户自己确认要不要把完成情况改过来（不自动
   // 帮改，避免用户诧异"我明明选了未完成怎么就变了"）。
+  // 这条错误本身有两种可能的修法(交付材料填错了 / 完成情况选错了)，光标红"完成情况"这一格
+  // 看不出该往哪个方向改——用"未完成原因/整改措施等字段有没有内容"作判断依据给出更具体的
+  // 提示：这些字段一般只有真心觉得没做完的时候才会认真填，如果已经填了内容，更可能是交付
+  // 材料抄错/忘改；如果什么都没填，更可能是选完成情况时漏选了"已完成"。
   if (status && status !== "已完成" && targetDeliverable && deliverable === targetDeliverable) {
+    const hasIncompleteNotes = ["f-reason", "f-rectify", "f-risk", "f-risk-note"].some(
+      (cls) => (tr.querySelector(`.${cls}`)?.value || "").trim() !== ""
+    );
+    const hint = hasIncompleteNotes
+      ? "已经填了未完成原因/整改措施等内容，更可能是本周交付材料填错了——建议改成能反映本周实际进度的描述，不要跟最终目标交付物写成一样的"
+      : "未完成原因等字段都是空的，更可能是完成情况选漏了——如果这项工作确实已经做完，请把完成情况改选'已完成'";
     errors.push({
       field: "f-status",
-      message: "本周交付材料与最终目标交付物完全一致，说明任务已经总体完成，但完成情况未选'已完成'，请确认",
+      message: `本周交付材料与最终目标交付物完全一致，但完成情况未选"已完成"：${hint}`,
     });
   }
 
