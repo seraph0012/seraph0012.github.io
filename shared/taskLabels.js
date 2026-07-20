@@ -183,3 +183,26 @@ export async function listAllActiveCandidates(weekId) {
   }
   return candidates;
 }
+
+// 拉出所有status='stopped'的任务(不分project_type，也不按周过滤)——shared/stoppedSection.js
+// "未启动/中止工作"表用这个自动同步本周该显示哪些中止任务(2026-07-20新增，是"未启动/中止"
+// 表格从"按周手动维护"改成"自动搜索所有中止任务"这次重新设计的核心查询)。跟
+// listAllActiveCandidates()结构几乎一样，过滤条件正好相反(这里只要status==='stopped'，
+// 那边是排除done/stopped)。
+export async function listStoppedTasks() {
+  const projects = await listProjects();
+  const candidates = [];
+  for (const p of projects) {
+    for (const t of p.tasks) {
+      if (t.status !== "stopped") continue;
+      candidates.push(taskCandidateFields(p, t));
+    }
+  }
+  const taskIds = candidates.map((c) => c.task_id);
+  const [labelMap, detailMap] = await Promise.all([buildLabelMap(taskIds), buildSourceDetailMap(taskIds)]);
+  for (const c of candidates) {
+    c.label = `${PROJECT_TYPE_LABEL[c.project_type]} ${labelMap.get(c.task_id) || "(未知任务)"}`;
+    c.detail = detailMap.get(c.task_id) || {};
+  }
+  return candidates;
+}

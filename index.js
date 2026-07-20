@@ -64,7 +64,7 @@ async function applyWeek(week) {
     renderWeekInfo();
     await summaryCtrl.setWeek(previousWeek);
     await planCtrl.setWeek(targetWeek, previousWeek);
-    await stoppedCtrl.setWeek(targetWeek, previousWeek);
+    await stoppedCtrl.setWeek(targetWeek);
     // 切周之后预览区还留着上一个周的内容会造成误导，直接清空，用户要看新的周就重新点"预览"
     document.getElementById("preview-root").innerHTML = "";
   } catch (err) {
@@ -153,8 +153,9 @@ async function init() {
   planCtrl = mountPlanSection(document.getElementById("plan-root"), { allModules, allPeople: people });
   stoppedCtrl = mountStoppedSection(document.getElementById("stopped-root"), { allModules });
   // "新建任务"完整版功能——展开后才会真正查数据(见taskCreateSection.js内部懒加载)，这里
-  // 挂载不额外增加首屏等待。onCreated让新任务立刻能在其它三个区块的"手动搜索/添加"里搜到，
-  // 不用用户自己点各自的"刷新列表"。
+  // 挂载不额外增加首屏等待。onCreated让新任务立刻能在计划/总结的"手动搜索/添加"里搜到，
+  // 不用用户自己点各自的"刷新列表"（未启动/中止表格不需要这个回调——新建的任务不会一
+  // 创建就是"中止"状态，没有东西要刷新）。
   mountTaskCreateSection(document.getElementById("task-create-root"), {
     allModules,
     allPeople: people,
@@ -162,7 +163,6 @@ async function init() {
     onCreated: () => {
       planCtrl.refreshManualCandidates();
       summaryCtrl.refreshUnplannedCandidates();
-      stoppedCtrl.refreshCandidates();
     },
   });
 

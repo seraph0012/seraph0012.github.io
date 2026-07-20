@@ -1,46 +1,34 @@
 // "未启动/中止工作"表格挂载函数，供index.js跟summarySection.js/planSection.js并列挂载。
-// 2026-07-20新增——此前网页上完全没有UI能创建appears_in='stopped'的weekly_task_entries，
-// PPT这一张表一直是空的；pptGenerate.js/db.js那半边其实早就支持，这里只是补上缺失的编辑入口。
+// 2026-07-20新增，同日晚些时候用户重新设计——此前网页上完全没有UI能创建appears_in='stopped'的
+// weekly_task_entries，PPT这一张表一直是空的；pptGenerate.js/db.js那半边其实早就支持，缺的
+// 是网页录入入口。**第一版**(复制上周+手动搜索添加+选"未启动"或"中止")被用户推翻——用户
+// 指出这张表的真实语义是"自动列出所有状态为中止的任务"，不需要按周维护/复制：①"未启动"
+// 不该出现在这张表——如果以后把年度计划全部导入，未启动的任务会非常多，这张表会被刷屏，
+// "未启动"这个状态本身在这张PPT表格设计之初只是为了"新添加的一系列任务"这个特定场景，
+// 不适合作为通用规则；②任务状态变成"中止"这件事只应该发生在别的地方(tasks.html详情面板
+// 的"标记中止"按钮)，这张表不该有自己的一套"选任务+指定状态"的添加流程，它只是把"当前
+// 所有中止任务"这个查询结果同步进本周的weekly_task_entries(仍然是按周存储，因为需协调
+// 资源/重点这些字段还是要能逐周编辑，且PPT本来就是读某一周的appears_in='stopped'数据)。
 //
-// 操作对象是targetWeek(跟planSection.js一样，变量名就叫week)。锁定语义：不自建锁定/解锁
-// 按钮，只读态直接跟随week.plan_locked_at——用户明确纠正过"锁定=这周例会已经开完、
-// 最终定稿"这个语义跟"本周计划"是同一件事，未启动/中止工作作为本周计划的一部分，理应
-// 共享同一个锁定状态，不需要另一套锁定流程。已知权衡：点"本周计划"区块的"锁定本周计划"
-// 按钮不会自动保存这个表格里未点保存的改动——这个表格改动频率非常低(用户原话"基本上
-// 每周都不变")，为此单独做跨模块保存编排不成比例，是明确接受的取舍，不是疏漏。
-import { listWeeklyTaskEntries, createWeeklyTaskEntry, updateWeeklyTaskEntry, deleteWeeklyTaskEntry, updateTask } from "./db.js";
-import { buildSourceDetailMap, listAllActiveCandidates, SOURCE_STATUS_LABEL } from "./taskLabels.js";
-import { renderTaskPicker } from "./taskPicker.js";
+// 操作对象是targetWeek(变量名就叫week)。锁定语义：不自建锁定/解锁按钮，只读态直接跟随
+// week.plan_locked_at——跟"本周计划"共享同一个"这周定稿了没有"语义。
+import { listWeeklyTaskEntries, createWeeklyTaskEntry, updateWeeklyTaskEntry, deleteWeeklyTaskEntry } from "./db.js";
+import { buildSourceDetailMap, listStoppedTasks } from "./taskLabels.js";
 import { moveRow } from "./rowReorder.js";
 
-// 交付物/未完成原因这类字段这张表不需要(见下方表格列设计)，唯一自由文本字段"需协调资源"
-// 沿用其它表格的textarea+转义模式，避免<>&被当成HTML解析。
+// 需协调资源是这张表唯一的自由文本字段，沿用其它表格的textarea+转义模式，避免<>&被当成
+// HTML解析。
 function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 }
 
 const TEMPLATE = `
-  <div class="lock-bar inline-form">
-    <button type="button" class="copy-prev-btn">复制上周</button>
-  </div>
-  <p class="copy-prev-result status"></p>
   <p class="stopped-lock-status status"></p>
-
-  <div class="stopped-add-block">
-    <h3>手动添加</h3>
-    <label>加入后状态
-      <select class="stopped-status-select">
-        <option value="stopped">中止</option>
-        <option value="not_started">未启动</option>
-      </select>
-    </label>
-    <div class="stopped-picker"></div>
-    <button type="button" class="refresh-stopped-btn secondary">刷新列表</button>
-    <p class="stopped-add-result status"></p>
+  <div class="lock-bar inline-form">
+    <button type="button" class="refresh-stopped-btn">刷新（搜索所有中止任务）</button>
+    <button type="button" class="save-stopped-btn">保存</button>
   </div>
-
-  <h3>未启动/中止工作</h3>
-  <button type="button" class="save-stopped-btn">保存</button>
+  <p class="refresh-stopped-result status"></p>
   <p class="save-stopped-result status"></p>
   <div class="table-scroll">
   <table class="report-table" style="min-width:900px">
@@ -51,7 +39,7 @@ const TEMPLATE = `
       <col style="width:130px" /><!-- 任务2级 -->
       <col style="width:130px" /><!-- 任务3级 -->
       <col style="width:40px" /><!-- 责任人 -->
-      <col style="width:110px" /><!-- 状态 -->
+      <col style="width:70px" /><!-- 状态 -->
       <col style="width:160px" /><!-- 需协调资源 -->
       <col style="width:40px" /><!-- 重点 -->
       <col style="width:50px" /><!-- 编辑 -->
@@ -83,8 +71,6 @@ export function mountStoppedSection(root, { allModules }) {
   root.innerHTML = TEMPLATE;
 
   let week = null; // targetWeek
-  let previousWeek = null;
-  let pickCandidates = [];
   let currentMaxSortOrder = 0;
 
   function moduleNameFor(moduleId) {
@@ -101,6 +87,10 @@ export function mountStoppedSection(root, { allModules }) {
     el.className = isLocked() ? "stopped-lock-status status warn" : "stopped-lock-status status";
   }
 
+  // 状态列现在是纯展示(detail.sourceStatus，从任务自身status反查而来)——这张表里出现的
+  // 每一行按定义都应该是"中止"，这一列的作用是给个直观核对(万一某行的任务后来被手动改回
+  // 了别的状态、还没被清理掉，这里能看出"这行数据可能过期了，该删)，不再需要"改成未启动/
+  // 中止"这类操作按钮(那是tasks.html详情面板的职责)。
   function buildStoppedRowElement(e, detail, locked) {
     const dis = locked ? "disabled" : "";
     const tr = document.createElement("tr");
@@ -114,10 +104,7 @@ export function mountStoppedSection(root, { allModules }) {
       <td class="task-col readonly-col">${detail.level2Text || ""}</td>
       <td class="task-col readonly-col">${detail.level3Text || ""}</td>
       <td class="readonly-col">${e.owner || ""}</td>
-      <td class="readonly-col">
-        <span class="stopped-status-text">${detail.sourceStatus || ""}</span>
-        ${dis ? "" : `<div><button type="button" class="secondary mini f-mark-not-started" title="改成未启动">未启动</button><button type="button" class="secondary mini f-mark-stopped" title="改成中止">中止</button></div>`}
-      </td>
+      <td class="readonly-col">${detail.sourceStatus || ""}</td>
       <td><textarea class="f-resources" rows="2" ${dis}>${escapeHtml(e.resources_needed || "无")}</textarea></td>
       <td><input type="checkbox" class="f-highlight" ${e.highlight ? "checked" : ""} ${dis} /></td>
       <td>${detail.detailUrl ? `<a href="${detail.detailUrl}" target="_blank" rel="noopener">编辑</a>` : ""}</td>
@@ -129,20 +116,6 @@ export function mountStoppedSection(root, { allModules }) {
     });
     tr.querySelector(".f-up").addEventListener("click", () => moveRow(tr, "up"));
     tr.querySelector(".f-down").addEventListener("click", () => moveRow(tr, "down"));
-    const markNotStartedBtn = tr.querySelector(".f-mark-not-started");
-    const markStoppedBtn = tr.querySelector(".f-mark-stopped");
-    if (markNotStartedBtn) {
-      markNotStartedBtn.addEventListener("click", async () => {
-        await updateTask(e.task_id, { status: "not_started" });
-        tr.querySelector(".stopped-status-text").textContent = SOURCE_STATUS_LABEL.not_started;
-      });
-    }
-    if (markStoppedBtn) {
-      markStoppedBtn.addEventListener("click", async () => {
-        await updateTask(e.task_id, { status: "stopped" });
-        tr.querySelector(".stopped-status-text").textContent = SOURCE_STATUS_LABEL.stopped;
-      });
-    }
     return tr;
   }
 
@@ -186,107 +159,57 @@ export function mountStoppedSection(root, { allModules }) {
     saveAllStoppedRows().catch(() => {});
   });
 
-  root.querySelector(".copy-prev-btn").addEventListener("click", async () => {
-    const resultEl = root.querySelector(".copy-prev-result");
+  // 核心同步逻辑：查一遍全部任务里状态为"中止"的，跟本周已有的stopped条目做差集，把还没
+  // 出现的补进来。silent=true(setWeek()内部自动跑一遍时用)不弹锁定提示——不然每次切换到
+  // 一个已锁定的历史周都会跳出一条警告，很吵；用户主动点"刷新"按钮时(silent=false，默认)
+  // 才提示。只新增不删除——任务如果后来被手动改回非中止状态，这一行不会自动消失(避免
+  // "PPT显示过的历史记录被静默改掉"的意外)，需要手动点"删除"清理。
+  async function syncStoppedTasks({ silent = false } = {}) {
+    const resultEl = root.querySelector(".refresh-stopped-result");
     if (isLocked()) {
-      resultEl.textContent = "本周计划已锁定，请先去「本周计划」区块解锁再复制";
-      resultEl.className = "copy-prev-result status warn";
+      if (!silent) {
+        resultEl.textContent = "本周计划已锁定，请先去「本周计划」区块解锁再刷新";
+        resultEl.className = "refresh-stopped-result status warn";
+      }
       return;
     }
-    if (!previousWeek) {
-      resultEl.textContent = "没有更早的例会周";
-      resultEl.className = "copy-prev-result status warn";
-      return;
+    if (!silent) {
+      resultEl.textContent = "搜索中...";
+      resultEl.className = "refresh-stopped-result status";
     }
-    resultEl.textContent = "复制中...";
-    resultEl.className = "copy-prev-result status";
     try {
-      const [prevEntries, currentEntries] = await Promise.all([
-        listWeeklyTaskEntries(previousWeek.id, "stopped"),
-        listWeeklyTaskEntries(week.id, "stopped"),
-      ]);
+      const [allStopped, currentEntries] = await Promise.all([listStoppedTasks(), listWeeklyTaskEntries(week.id, "stopped")]);
       const existing = new Set(currentEntries.map((e) => e.task_id));
-      const toCreate = prevEntries.filter((e) => !existing.has(e.task_id));
-      for (const e of toCreate) {
+      const toCreate = allStopped.filter((c) => !existing.has(c.task_id));
+      for (const c of toCreate) {
         await createWeeklyTaskEntry({
           meeting_week_id: week.id,
           appears_in: "stopped",
-          task_id: e.task_id,
-          module_id: e.module_id,
-          owner: e.owner,
-          resources_needed: e.resources_needed || "无",
-          highlight: e.highlight,
+          task_id: c.task_id,
+          module_id: c.module_id,
+          owner: c.owner,
+          resources_needed: "无",
           sort_order: ++currentMaxSortOrder,
         });
       }
-      resultEl.textContent = toCreate.length === 0 ? "上周的条目都已经复制过了" : `已复制 ${toCreate.length} 条`;
-      resultEl.className = "copy-prev-result status ok";
-      await loadStoppedList();
-      await loadPickCandidates();
+      if (!silent || toCreate.length > 0) {
+        resultEl.textContent = toCreate.length === 0 ? "没有新的中止任务" : `已加入 ${toCreate.length} 条`;
+        resultEl.className = "refresh-stopped-result status ok";
+      }
+      if (toCreate.length > 0) await loadStoppedList();
     } catch (err) {
       resultEl.textContent = `失败：${err.message}`;
-      resultEl.className = "copy-prev-result status error";
-    }
-  });
-
-  function renderPicker() {
-    renderTaskPicker(root.querySelector(".stopped-picker"), pickCandidates, handlePick);
-  }
-
-  async function loadPickCandidates() {
-    if (!week) {
-      pickCandidates = [];
-      renderPicker();
-      return;
-    }
-    const [all, stoppedEntries] = await Promise.all([listAllActiveCandidates(week.id), listWeeklyTaskEntries(week.id, "stopped")]);
-    const excluded = new Set(stoppedEntries.map((e) => e.task_id));
-    pickCandidates = all.filter((c) => !excluded.has(c.task_id));
-    renderPicker();
-  }
-
-  async function handlePick(c) {
-    const resultEl = root.querySelector(".stopped-add-result");
-    if (isLocked()) {
-      resultEl.textContent = "本周计划已锁定，请先去「本周计划」区块解锁再添加";
-      resultEl.className = "stopped-add-result status warn";
-      return;
-    }
-    const status = root.querySelector(".stopped-status-select").value; // 'stopped' | 'not_started'
-    resultEl.textContent = "添加中...";
-    resultEl.className = "stopped-add-result status";
-    try {
-      const entry = await createWeeklyTaskEntry({
-        meeting_week_id: week.id,
-        appears_in: "stopped",
-        task_id: c.task_id,
-        module_id: c.module_id,
-        owner: c.owner,
-        resources_needed: "无",
-        sort_order: ++currentMaxSortOrder,
-      });
-      await updateTask(c.task_id, { status });
-      resultEl.textContent = `已添加：${c.label}`;
-      resultEl.className = "stopped-add-result status ok";
-      pickCandidates = pickCandidates.filter((x) => x.task_id !== c.task_id);
-      renderPicker();
-      const detail = { ...(c.detail || {}), sourceStatus: SOURCE_STATUS_LABEL[status] };
-      root.querySelector(".stopped-tbody").appendChild(buildStoppedRowElement(entry, detail, isLocked()));
-    } catch (err) {
-      resultEl.textContent = `失败：${err.message}`;
-      resultEl.className = "stopped-add-result status error";
+      resultEl.className = "refresh-stopped-result status error";
     }
   }
-  root.querySelector(".refresh-stopped-btn").addEventListener("click", loadPickCandidates);
+  root.querySelector(".refresh-stopped-btn").addEventListener("click", () => syncStoppedTasks());
 
-  async function setWeek(w, prevWeek) {
+  async function setWeek(w) {
     week = w;
-    previousWeek = prevWeek;
     renderLockHint();
-    await Promise.all([loadStoppedList(), loadPickCandidates()]);
+    await loadStoppedList();
+    await syncStoppedTasks({ silent: true });
   }
 
-  // 供shared/taskCreateSection.js"新建任务"表单创建成功后调用，让新任务立刻能在这里的
-  // 手动添加候选里搜到，不用用户自己点"刷新列表"。
-  return { setWeek, refreshCandidates: loadPickCandidates };
+  return { setWeek };
 }
