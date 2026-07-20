@@ -51,6 +51,19 @@ td.readonly-col { color: #555; }
    两个width:100%的控件默认会自然换行堆叠，这里加一点间距避免贴得太紧(2026-07-16新增)。 */
 .report-table .f-risk { margin-bottom: 2px; }
 .report-table .delete-x { padding: 2px 8px; color: #c0392b; font-weight: bold; }
+/* 审核功能(2026-07-20)：required/min/max这类HTML5原生约束能在填写阶段就防住的错误
+   (必填/用时非负/日期先后顺序/日期落在本周工作日范围内)，靠:invalid给一点实时视觉提示，
+   不用等保存了才发现；保存时(saveAllPlanRows/saveAllSummaryRows)读取checkValidity()的
+   结果，连同HTML表达不了的业务规则(跨字段/跨表/跨页面，见entryValidation.js)一起，把
+   出错的具体输入框/只读列标成.field-error——用outline红框(可编辑控件)或背景色(只读td，
+   没有边框可言，标题/最终目标交付物这类字段不在这两张表单里改，只能提示去别处改)。 */
+.report-table input:invalid,
+.report-table select:invalid,
+.report-table textarea:invalid {
+  outline: 1px dashed #c0392b;
+}
+.field-error { outline: 2px solid #c0392b; }
+td.field-error { background: #fdecea; }
 
 .project-block { border: 1px solid #ddd; border-radius: 6px; padding: 10px 12px; margin-bottom: 14px; }
 .project-block h3 { margin: 0 0 8px; font-size: 15px; }

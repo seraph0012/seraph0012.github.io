@@ -11,27 +11,14 @@ import {
 } from "./db.js";
 import {
   PROJECT_TYPE_LABEL,
-  buildLabelMap,
   buildSourceDetailMap,
   listAllActiveCandidates,
   taskCandidateFields,
 } from "./taskLabels.js";
 import { dateWithWeekday, weekdayLabel } from "./dateUtils.js";
-import { validateSourceDetail, validateOwnFields } from "./entryValidation.js";
+import { validatePlanEntry } from "./entryValidation.js";
 import { renderTaskPicker } from "./taskPicker.js";
 import { moveRow } from "./rowReorder.js";
-
-const PLAN_REQUIRED_FIELDS = [
-  ["module_id", "模块"],
-  ["plan_category", "类别"],
-  ["owner", "责任人"],
-  ["deliverable_this_week", "本周交付物"],
-  ["planned_hours", "计划用时"],
-  ["plan_start_date", "计划开始时间"],
-  ["execution_deadline", "执行期"],
-  ["priority_quadrant", "工作优先级"],
-  ["resources_needed", "需协调的资源"],
-];
 
 // 2026-07-20新增：跨周字段自动填充。只认"文本末尾v/V+数字"这一种版本号格式(比如
 // "项目计划书v1"->"v2")，不匹配就原样返回、不做任何模糊猜测——用户明确要求保守，
@@ -305,32 +292,17 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     statusEl.className = locked ? "lock-status status warn" : "lock-status status";
   }
 
-  async function validatePlanBeforeLock() {
-    const entries = await listWeeklyTaskEntries(week.id, "plan");
-    const taskIds = entries.map((e) => e.task_id);
-    const [labelMap, detailMap] = await Promise.all([buildLabelMap(taskIds), buildSourceDetailMap(taskIds)]);
-    const problems = [];
-    for (const e of entries) {
-      const label = labelMap.get(e.task_id) || "(未知任务)";
-      const detail = detailMap.get(e.task_id);
-      const errs = [...validateOwnFields(e, PLAN_REQUIRED_FIELDS), ...validateSourceDetail(e, detail)];
-      if (errs.length > 0) problems.push(`${label}：${errs.join("；")}`);
-    }
-    return problems;
-  }
-
   root.querySelector(".lock-btn").addEventListener("click", async () => {
     // 锁定本身就是"最终确认"动作，点它前先把表格里当前显示的值(不管点没点过"保存")
-    // 落库一遍，避免"改了字段但忘了点保存，一锁定这些改动就跟着旧数据被冲掉"这种情况
+    // 落库一遍，避免"改了字段但忘了点保存，一锁定这些改动就跟着旧数据被冲掉"这种情况——
+    // saveAllPlanRows()现在本身就会做完整的审核校验(entryValidation.js)，校验不过会
+    // throw，被这里的catch挡住，不需要再单独查一遍(旧的validatePlanBeforeLock()已删除，
+    // 那套字段级校验现在统一在saveAllPlanRows()里做，标红定位到具体输入框，比alert列文字
+    // 更清楚)。
     try {
       await saveAllPlanRows();
     } catch {
-      return; // 保存失败，错误已经显示在save-plan-result里，不要继续往下锁
-    }
-    const problems = await validatePlanBeforeLock();
-    if (problems.length > 0) {
-      alert(`本周计划还有内容没填完，暂不能锁定：\n\n${problems.join("\n")}`);
-      return;
+      return; // 保存失败，错误已经标红+显示在save-plan-result里，不要继续往下锁
     }
     const updated = await updateMeetingWeekFields(week.id, { plan_locked_at: new Date().toISOString() });
     Object.assign(week, updated);
@@ -441,11 +413,23 @@ export function mountPlanSection(root, { allModules, allPeople }) {
       resultEl.className = "add-result status warn";
       return;
     }
+    // B1：同一个任务不能在本周计划里重复出现——从源头查重(而不是等保存时才发现)，比对
+    // 当前"本周计划(已保存)"表格里已有的task_id(2026-07-20审核功能新增，见
+    // tools/.claude/plans/plan-audit-rules-v1.md)。
+    const existingTaskIds = new Set(
+      [...root.querySelectorAll(".plan-tbody tr[data-task-id]")].map((tr) => Number(tr.dataset.taskId))
+    );
     const rows = [...root.querySelectorAll(".candidates-tbody tr")];
     const toInsert = [];
+    let skippedDup = 0;
     for (const tr of rows) {
       if (!tr.querySelector(".f-check").checked) continue;
       const c = candidates[Number(tr.dataset.idx)];
+      if (existingTaskIds.has(c.task_id)) {
+        skippedDup++;
+        continue;
+      }
+      existingTaskIds.add(c.task_id); // 防止这一批里勾选了同一个任务两次
       toInsert.push({
         c,
         row: {
@@ -466,7 +450,7 @@ export function mountPlanSection(root, { allModules, allPeople }) {
       });
     }
     if (toInsert.length === 0) {
-      resultEl.textContent = "没有勾选任何候选";
+      resultEl.textContent = skippedDup > 0 ? "勾选的任务都已经在本周计划里了" : "没有勾选任何候选";
       resultEl.className = "add-result status warn";
       return;
     }
@@ -486,7 +470,7 @@ export function mountPlanSection(root, { allModules, allPeople }) {
           return { c, entry };
         })
       );
-      resultEl.textContent = `已加入 ${created.length} 条`;
+      resultEl.textContent = `已加入 ${created.length} 条` + (skippedDup > 0 ? `（跳过 ${skippedDup} 条已在本周计划里的重复任务）` : "");
       resultEl.className = "add-result status ok";
       const insertedTaskIds = new Set(toInsert.map(({ c }) => c.task_id));
       candidates = candidates.filter((c) => !insertedTaskIds.has(c.task_id));
@@ -528,6 +512,15 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     const resultEl = root.querySelector(".manual-add-result");
     if (isPlanLocked()) {
       resultEl.textContent = "本周计划已锁定，请先解锁再添加";
+      resultEl.className = "manual-add-result status warn";
+      return;
+    }
+    // B1：源头查重，同一个任务不能在本周计划里出现两次
+    const alreadyInPlan = [...root.querySelectorAll(".plan-tbody tr[data-task-id]")].some(
+      (tr) => Number(tr.dataset.taskId) === c.task_id
+    );
+    if (alreadyInPlan) {
+      resultEl.textContent = "这个任务已经在本周计划里了，不能重复添加";
       resultEl.className = "manual-add-result status warn";
       return;
     }
@@ -579,7 +572,15 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     const dis = locked ? "disabled" : "";
     const tr = document.createElement("tr");
     tr.dataset.entryId = e.id;
+    tr.dataset.taskId = e.task_id;
     tr.dataset.sortOrder = e.sort_order ?? "";
+    // 计划开始/执行期的min/max：审核功能(2026-07-20)——能靠HTML5原生约束在填写阶段就防住的
+    // 错误(必填/日期先后顺序/日期落在本周工作日范围内)，不留到保存后才标红报错。两个日期框
+    // 互相联动：f-start的上限取"执行期当前值"和"本周最后工作日"里更靠前的一个，f-deadline
+    // 的下限取"计划开始当前值"和"本周工作开始日"里更靠后的一个——原生日期选择器点选时物理上
+    // 就选不出矛盾组合；键入绕过的情况仍靠保存时checkValidity()兜底(entryValidation.js)。
+    const startMax = e.execution_deadline || week.work_week_end || "";
+    const deadlineMin = e.plan_start_date || week.meeting_date;
     tr.innerHTML = `
       <td><div class="sort-cell"><button type="button" class="secondary sort-btn f-up" ${dis} title="上移">↑</button><button type="button" class="secondary sort-btn f-down" ${dis} title="下移">↓</button></div></td>
       <td class="readonly-col">${moduleNameFor(e.module_id)}</td>
@@ -588,13 +589,13 @@ export function mountPlanSection(root, { allModules, allPeople }) {
       <td class="task-col readonly-col">${detail.level2Text || ""}</td>
       <td class="task-col readonly-col">${detail.level3Text || ""}</td>
       <td class="readonly-col">${e.owner || ""}</td>
-      <td><textarea class="f-deliverable" rows="2" ${dis}>${escapeHtml(e.deliverable_this_week)}</textarea></td>
-      <td><input type="number" class="f-hours" step="0.5" value="${e.planned_hours ?? ""}" ${dis} /></td>
-      <td><input type="date" class="f-start" value="${e.plan_start_date || ""}" min="${week.meeting_date}" max="${week.work_week_end || ""}" ${dis} /><br /><span class="f-start-weekday status">${weekdayLabel(e.plan_start_date)}</span></td>
-      <td><input type="date" class="f-deadline" value="${e.execution_deadline || ""}" min="${week.meeting_date}" max="${week.work_week_end || ""}" ${dis} /><br /><span class="f-deadline-weekday status">${weekdayLabel(e.execution_deadline)}</span></td>
-      <td class="task-col readonly-col">${detail.targetDeliverable || ""}</td>
-      <td class="readonly-col">${detail.completionDate || ""}</td>
-      <td><select class="f-priority" ${dis}>${priorityOptionsHtml(e.priority_quadrant)}</select></td>
+      <td><textarea class="f-deliverable" rows="2" required ${dis}>${escapeHtml(e.deliverable_this_week)}</textarea></td>
+      <td><input type="number" class="f-hours" step="0.5" min="0" required value="${e.planned_hours ?? ""}" ${dis} /></td>
+      <td><input type="date" class="f-start" required value="${e.plan_start_date || ""}" min="${week.meeting_date}" max="${startMax}" ${dis} /><br /><span class="f-start-weekday status">${weekdayLabel(e.plan_start_date)}</span></td>
+      <td><input type="date" class="f-deadline" required value="${e.execution_deadline || ""}" min="${deadlineMin}" max="${week.work_week_end || ""}" ${dis} /><br /><span class="f-deadline-weekday status">${weekdayLabel(e.execution_deadline)}</span></td>
+      <td class="task-col readonly-col target-deliverable-col">${detail.targetDeliverable || ""}</td>
+      <td class="readonly-col completion-date-col">${detail.completionDate || ""}</td>
+      <td><select class="f-priority" required ${dis}>${priorityOptionsHtml(e.priority_quadrant)}</select></td>
       <td><textarea class="f-resources" rows="2" ${dis}>${escapeHtml(e.resources_needed || "无")}</textarea></td>
       <td><input type="checkbox" class="f-highlight" ${e.highlight ? "checked" : ""} ${dis} /></td>
       <td>${detail.detailUrl ? `<a href="${detail.detailUrl}" target="_blank" rel="noopener">编辑</a>` : ""}</td>
@@ -608,12 +609,15 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     });
     tr.querySelector(".f-up").addEventListener("click", () => moveRow(tr, "up"));
     tr.querySelector(".f-down").addEventListener("click", () => moveRow(tr, "down"));
-    // 2026-07-20用户反馈：光看日期不知道选的是周几，容易选到假期——纯本地即时更新，不触发保存
+    // 2026-07-20用户反馈：光看日期不知道选的是周几，容易选到假期——纯本地即时更新，不触发
+    // 保存；同时把改动的值同步给另一个日期框的min/max，维持"开始不晚于截止"这条联动约束。
     tr.querySelector(".f-start").addEventListener("change", (ev) => {
       tr.querySelector(".f-start-weekday").textContent = weekdayLabel(ev.target.value);
+      tr.querySelector(".f-deadline").min = ev.target.value || week.meeting_date;
     });
     tr.querySelector(".f-deadline").addEventListener("change", (ev) => {
       tr.querySelector(".f-deadline-weekday").textContent = weekdayLabel(ev.target.value);
+      tr.querySelector(".f-start").max = ev.target.value || week.work_week_end || "";
     });
     return tr;
   }
@@ -635,14 +639,50 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     currentMaxSortOrder = entries.reduce((m, e) => Math.max(m, e.sort_order ?? 0), 0);
   }
 
+  // 保存成功后额外查一遍："总体未完成"的任务里有哪些本周计划完全没安排——不阻断保存，
+  // 只是提示(呈现方式已跟用户确认，见plan-audit-rules-v1.md第四部分)。listAllActiveCandidates()
+  // 已经排除了done/stopped的任务，返回的都是"总体未完成"的，直接跟本周计划里已有的
+  // task_id做差集即可，不需要额外按sourceStatus过滤。
+  async function checkUnscheduledIncomplete() {
+    const [all, planEntries] = await Promise.all([
+      listAllActiveCandidates(week.id),
+      listWeeklyTaskEntries(week.id, "plan"),
+    ]);
+    const planned = new Set(planEntries.map((e) => e.task_id));
+    return all.filter((c) => !planned.has(c.task_id));
+  }
+
   // 遍历当前表格里所有行，把显示的值一次性批量提交——不逐字段自动保存，改成"填完点保存"
   // 的模式(2026-07-14用户明确要求)。被"锁定本周计划"按钮和独立的"保存"按钮共用。
+  // 2026-07-20新增审核功能：写库前先跑一遍entryValidation.js的规则校验，有问题就标红对应
+  // 输入框/列、不写库、直接throw——校验规则本身(必填/用时非负/日期先后顺序/日期范围/
+  // 任务状态冲突/跨页面字段缺失)见tools/.claude/plans/plan-audit-rules-v1.md。
   async function saveAllPlanRows() {
     const resultEl = root.querySelector(".save-plan-result");
     const rows = [...root.querySelectorAll(".plan-tbody tr[data-entry-id]")];
     if (rows.length === 0) return;
     resultEl.textContent = "保存中...";
     resultEl.className = "save-plan-result status";
+    root.querySelectorAll(".field-error").forEach((el) => el.classList.remove("field-error"));
+    const taskIds = rows.map((tr) => Number(tr.dataset.taskId));
+    const detailMap = await buildSourceDetailMap(taskIds);
+
+    let errorCount = 0;
+    for (const tr of rows) {
+      const detail = detailMap.get(Number(tr.dataset.taskId)) || {};
+      const errors = validatePlanEntry(tr, detail);
+      for (const { field } of errors) {
+        const el = tr.querySelector(`.${field}`);
+        if (el) el.classList.add("field-error");
+        errorCount++;
+      }
+    }
+    if (errorCount > 0) {
+      resultEl.textContent = `保存失败：${errorCount}处错误，已用红色标出，请修正后重新保存`;
+      resultEl.className = "save-plan-result status error";
+      throw new Error("校验未通过");
+    }
+
     try {
       for (const tr of rows) {
         const entryId = Number(tr.dataset.entryId);
@@ -658,6 +698,14 @@ export function mountPlanSection(root, { allModules, allPeople }) {
       }
       resultEl.textContent = `已保存 ${rows.length} 条`;
       resultEl.className = "save-plan-result status ok";
+      try {
+        const missing = await checkUnscheduledIncomplete();
+        if (missing.length > 0) {
+          resultEl.textContent += `｜提醒：以下未完成任务本周计划里没有安排——${missing.map((c) => c.label).join("、")}`;
+        }
+      } catch {
+        // 这条提醒失败不影响已经保存成功的结果，静默忽略
+      }
     } catch (err) {
       resultEl.textContent = `保存失败：${err.message}`;
       resultEl.className = "save-plan-result status error";

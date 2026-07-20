@@ -10,38 +10,15 @@ import {
   updateMeetingWeekFields,
 } from "./db.js";
 import {
-  buildLabelMap,
   buildSourceDetailMap,
   syncTaskStatus,
   computeSyncedTaskStatus,
   SOURCE_STATUS_LABEL,
   listAllActiveCandidates,
 } from "./taskLabels.js";
-import { validateSourceDetail, validateOwnFields } from "./entryValidation.js";
+import { validateSummaryEntry } from "./entryValidation.js";
 import { renderTaskPicker } from "./taskPicker.js";
 import { moveRow } from "./rowReorder.js";
-
-const SUMMARY_REQUIRED_FIELDS = [
-  ["module_id", "模块"],
-  ["summary_category", "类别"],
-  ["owner", "责任人"],
-  ["deliverable_this_week", "上周交付材料"],
-  ["actual_hours", "实际用时"],
-  ["status", "完成情况"],
-];
-// 2026-07-16修复：风险相关的必填校验原来只查risk_level(低/中/高)，报错文案却写着
-// "未填风险说明"——这处文案和实际检查的字段名不一致，恰好暴露了当时压根没有单独的
-// "风险说明"文字字段(risk_note，见sql/0023)这个真实缺口。现在level(决定PPT颜色)和
-// note(PPT里实际显示的说明文字)是两个独立字段，分开校验。
-function conditionalFieldErrors(e) {
-  if (e.status !== "未完成") return [];
-  const errs = [];
-  if (!e.incomplete_reason) errs.push("未填未完成原因");
-  if (!e.rectification_measures) errs.push("未填整改措施");
-  if (!e.risk_level) errs.push("未填风险等级");
-  if (!e.risk_note) errs.push("未填风险说明");
-  return errs;
-}
 
 const STATUS_OPTIONS = ["", "已完成", "未完成", "中止", "未启动"];
 const RISK_OPTIONS = [
@@ -226,38 +203,18 @@ export function mountSummarySection(root, { allModules, allPeople }) {
     });
   });
 
-  async function validateSummaryBeforeLock() {
-    const entries = await listWeeklyTaskEntries(week.id, "summary");
-    const taskIds = entries.map((e) => e.task_id);
-    const [labelMap, detailMap] = await Promise.all([buildLabelMap(taskIds), buildSourceDetailMap(taskIds)]);
-    const problems = [];
-    for (const e of entries) {
-      const label = labelMap.get(e.task_id) || "(未知任务)";
-      const detail = detailMap.get(e.task_id);
-      const errs = [
-        ...validateOwnFields(e, SUMMARY_REQUIRED_FIELDS),
-        ...conditionalFieldErrors(e),
-        ...validateSourceDetail(e, detail),
-      ];
-      if (errs.length > 0) problems.push(`${label}：${errs.join("；")}`);
-    }
-    return problems;
-  }
-
   root.querySelector(".lock-btn").addEventListener("click", async () => {
     // 锁定是最终确认动作，点它前先把表格里当前显示的值(不管点没点过"保存")落库一遍，
     // 避免"改了字段但忘了点保存，一锁定这些改动就跟着旧数据被冲掉"——重点工作文本框
-    // 同理，2026-07-20新增，一并落库。
+    // 同理，2026-07-20新增，一并落库。saveAllSummaryRows()现在本身就会做完整的审核校验
+    // (entryValidation.js)，校验不过会throw，被下面的catch挡住，不需要再单独查一遍(旧的
+    // validateSummaryBeforeLock()已删除，那套字段级校验统一在saveAllSummaryRows()里做，
+    // 标红定位到具体输入框，比alert列文字更清楚)。
     try {
       await saveAllSummaryRows();
       await saveReviewKeyPoints();
     } catch {
-      return; // 保存失败，错误已经显示在对应的status提示里，不要继续往下锁
-    }
-    const problems = await validateSummaryBeforeLock();
-    if (problems.length > 0) {
-      alert(`本周总结还有内容没填完，暂不能锁定：\n\n${problems.join("\n")}`);
-      return;
+      return; // 保存失败，错误已经标红+显示在对应的status提示里，不要继续往下锁
     }
     const updated = await updateMeetingWeekFields(week.id, { summary_locked_at: new Date().toISOString() });
     Object.assign(week, updated);
@@ -338,7 +295,13 @@ export function mountSummarySection(root, { allModules, allPeople }) {
   // 拼出这一行就够了)
   function buildSummaryRowElement(e, detail, locked) {
     const dis = locked ? "disabled" : "";
-    const disReason = dis || e.status !== "未完成" ? "disabled" : "";
+    const isIncompleteInit = e.status === "未完成";
+    const disReason = dis || !isIncompleteInit ? "disabled" : "";
+    // 审核功能(2026-07-20)：未完成原因/整改措施/风险等级/风险说明只在"完成情况"选了
+    // "未完成"时才必填——required属性跟着disabled状态一起切换(disabled的控件本来就不参与
+    // checkValidity()，所以理论上不加required也不会误报，但显式加上更清楚地表达"这四个
+    // 字段现在是必填的"，配合下面.f-status的change监听联动更新)。
+    const reqReason = !dis && isIncompleteInit ? "required" : "";
     const tr = document.createElement("tr");
     tr.dataset.entryId = e.id;
     tr.dataset.taskId = e.task_id;
@@ -352,15 +315,15 @@ export function mountSummarySection(root, { allModules, allPeople }) {
       <td class="task-col readonly-col">${detail.level2Text || ""}</td>
       <td class="task-col readonly-col">${detail.level3Text || ""}</td>
       <td class="readonly-col">${e.owner || ""}</td>
-      <td><textarea class="f-deliverable" rows="2" ${dis}>${escapeHtml(e.deliverable_this_week)}</textarea></td>
-      <td><select class="f-status" ${dis}>${statusOptionsHtml(e.status)}</select></td>
-      <td><input type="number" class="f-hours" step="0.5" value="${e.actual_hours ?? ""}" ${dis} /></td>
-      <td><textarea class="f-reason" rows="2" ${disReason}>${escapeHtml(e.incomplete_reason)}</textarea></td>
-      <td><textarea class="f-rectify" rows="2" ${disReason}>${escapeHtml(e.rectification_measures)}</textarea></td>
-      <td><select class="f-risk" ${disReason}>${riskOptionsHtml(e.risk_level)}</select><textarea class="f-risk-note" rows="2" placeholder="风险说明" ${disReason}>${escapeHtml(e.risk_note)}</textarea></td>
-      <td class="task-col readonly-col">${detail.targetDeliverable || ""}</td>
+      <td><textarea class="f-deliverable" rows="2" required ${dis}>${escapeHtml(e.deliverable_this_week)}</textarea></td>
+      <td><select class="f-status" required ${dis}>${statusOptionsHtml(e.status)}</select></td>
+      <td><input type="number" class="f-hours" step="0.5" min="0" required value="${e.actual_hours ?? ""}" ${dis} /></td>
+      <td><textarea class="f-reason" rows="2" ${reqReason} ${disReason}>${escapeHtml(e.incomplete_reason)}</textarea></td>
+      <td><textarea class="f-rectify" rows="2" ${reqReason} ${disReason}>${escapeHtml(e.rectification_measures)}</textarea></td>
+      <td><select class="f-risk" ${reqReason} ${disReason}>${riskOptionsHtml(e.risk_level)}</select><textarea class="f-risk-note" rows="2" placeholder="风险说明" ${reqReason} ${disReason}>${escapeHtml(e.risk_note)}</textarea></td>
+      <td class="task-col readonly-col target-deliverable-col">${detail.targetDeliverable || ""}</td>
       <td class="readonly-col source-status-col">${detail.sourceStatus || ""}</td>
-      <td class="readonly-col">${detail.completionDate || ""}</td>
+      <td class="readonly-col completion-date-col">${detail.completionDate || ""}</td>
       <td><input type="checkbox" class="f-highlight" ${e.highlight ? "checked" : ""} ${dis} /></td>
       <td>${detail.detailUrl ? `<a href="${detail.detailUrl}" target="_blank" rel="noopener">编辑</a>` : ""}</td>
       <td><button type="button" class="secondary delete-x" ${dis} title="删除">×</button></td>
@@ -369,14 +332,15 @@ export function mountSummarySection(root, { allModules, allPeople }) {
     // "保存"按钮批量提交(saveAllSummaryRows())。"完成情况"这个下拉是唯一例外——它变化时
     // 要马上切换"未完成原因/整改措施/风险等级/风险说明"这四个字段是否可编辑(纯本地UI状态，不涉及
     // 网络请求)，所以单独保留一个change监听，但只做本地disabled切换，不再触发保存/
-    // 整表reload(reload会把其他还没点保存的行的改动一起冲掉)。
+    // 整表reload(reload会把其他还没点保存的行的改动一起冲掉)。required属性同步跟着切换。
     tr.querySelector(".f-status").addEventListener("change", () => {
       const isIncomplete = tr.querySelector(".f-status").value === "未完成";
       const reasonDisabled = !!dis || !isIncomplete;
-      tr.querySelector(".f-reason").disabled = reasonDisabled;
-      tr.querySelector(".f-rectify").disabled = reasonDisabled;
-      tr.querySelector(".f-risk").disabled = reasonDisabled;
-      tr.querySelector(".f-risk-note").disabled = reasonDisabled;
+      for (const sel of [".f-reason", ".f-rectify", ".f-risk", ".f-risk-note"]) {
+        const el = tr.querySelector(sel);
+        el.disabled = reasonDisabled;
+        el.required = !reasonDisabled;
+      }
     });
     tr.querySelector(".delete-x").addEventListener("click", async () => {
       await deleteWeeklyTaskEntry(e.id);
@@ -407,12 +371,42 @@ export function mountSummarySection(root, { allModules, allPeople }) {
 
   // 遍历当前表格里所有行，把显示的值一次性批量提交——不逐字段自动保存，改成"填完点保存"
   // 的模式(2026-07-14用户明确要求)。被"锁定本周总结"按钮和独立的"保存"按钮共用。
+  // 2026-07-20新增审核功能：写库前先跑一遍entryValidation.js的规则校验，有问题就标红对应
+  // 输入框/列、不写库、直接throw——校验规则本身(必填/用时非负/跨页面字段缺失，以及用户
+  // 根据实际开会经验总结的交付物一致性规则E1/E3/E4/E5/E6)见
+  // tools/.claude/plans/plan-audit-rules-v1.md。E3/E4需要这一周(week.id，即previousWeek)
+  // 对应的PLAN条目做比对基准。
   async function saveAllSummaryRows() {
     const resultEl = root.querySelector(".save-summary-result");
     const rows = [...root.querySelectorAll(".summary-tbody tr[data-entry-id]")];
     if (rows.length === 0) return;
     resultEl.textContent = "保存中...";
     resultEl.className = "save-summary-result status";
+    root.querySelectorAll(".field-error").forEach((el) => el.classList.remove("field-error"));
+    const taskIds = rows.map((tr) => Number(tr.dataset.taskId));
+    const [detailMap, planEntries] = await Promise.all([
+      buildSourceDetailMap(taskIds),
+      listWeeklyTaskEntries(week.id, "plan"),
+    ]);
+    const planByTaskId = new Map(planEntries.map((p) => [p.task_id, p]));
+
+    let errorCount = 0;
+    for (const tr of rows) {
+      const taskId = Number(tr.dataset.taskId);
+      const detail = detailMap.get(taskId) || {};
+      const errors = validateSummaryEntry(tr, detail, planByTaskId.get(taskId));
+      for (const { field } of errors) {
+        const el = tr.querySelector(`.${field}`);
+        if (el) el.classList.add("field-error");
+        errorCount++;
+      }
+    }
+    if (errorCount > 0) {
+      resultEl.textContent = `保存失败：${errorCount}处错误，已用红色标出，请修正后重新保存`;
+      resultEl.className = "save-summary-result status error";
+      throw new Error("校验未通过");
+    }
+
     try {
       for (const tr of rows) {
         const entryId = Number(tr.dataset.entryId);
