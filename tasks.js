@@ -133,6 +133,20 @@ function parseOwnerValue() {
   return { isNew: false, type: kind, id: Number(rest) };
 }
 
+// 2026-07-24修复：新建任务表单选择已有二级编号时，下拉选项此前只显示"二级 N"，看不出
+// 这个编号下面已经是什么内容——2级标题因此显得不像1级(归属下拉直接是项目名)/3级(标题
+// 输入框)那样"看得见"。这里按跟tasks.js树状展示(level2NodeForTaskList)完全一致的规则
+// 算出这个二级编号该显示的标题：如果它当前是"二级本身就是叶子"(唯一1条且没有三级)，
+// 标题就是那条任务自己的title；否则(已经是真正的分组)去task_groups表找组标题。
+function level2DisplayLabel(project, level2Number) {
+  const siblings = (project.tasks || []).filter((c) => c.wbs_level2_number === level2Number);
+  if (siblings.length === 1 && siblings[0].wbs_level3_number == null) {
+    return siblings[0].title;
+  }
+  const group = (project.task_groups || []).find((g) => g.wbs_level2_number === level2Number);
+  return group?.title || "(未命名)";
+}
+
 // "无(项目本身就是任务)"这个选项只在项目还完全没有任何任务时才提供——一个项目要么是
 // "本身就是一条扁平任务"，要么是"往下分解成二级/三级"，两者互斥(DB层用partial unique
 // index强制)，不然会出现"项目自己是任务、同时又有子任务"这种说不清楚该看哪个的状态。
@@ -165,10 +179,25 @@ function refreshLevel2Options(sel) {
   const noneOption = children.length === 0 ? `<option value="__none__">无(项目本身就是任务)</option>` : "";
   level2Select.innerHTML =
     noneOption +
-    groups.map((g) => `<option value="${g}">二级 ${g}</option>`).join("") +
+    groups.map((g) => `<option value="${g}">二级 ${g}：${level2DisplayLabel(project, g)}</option>`).join("") +
     `<option value="__new__">+ 新建二级(预填 ${maxLevel2 + 1})</option>`;
   level2Select.value = children.length === 0 ? "__none__" : groups.length ? String(groups[0]) : "__new__";
   onLevel2Change(sel);
+}
+
+// 只有"新建二级"且三级编号真的填了值，才是在搭一个真正的3级结构，此时"二级标题"
+// (给这个新分组命名)才有意义、也才会被真正存进task_groups(见createTaskListLeaf的存储
+// 条件——level3为空时upsertTaskGroup根本不会被调用)。level3留空="这个二级本身就是
+// 任务"，此时"标题"(leaf-title)才是真正会显示出来的标题，"二级标题"字段没有存在意义——
+// 之前不管level3填没填都无条件显示这个字段，会出现"标题"和"二级标题"两个输入框同时
+// 摆在一起、但填了"二级标题"却被静默丢弃"这种逻辑混乱(2026-07-24用户反馈修正)。level3是
+// 用户可以随时编辑的输入框，不能只在下拉change时算一次，要跟着它自己的input事件实时联动。
+function updateLevel2TitleVisibility(isNewLevel2) {
+  const level3Val = document.getElementById("wbs-level3").value;
+  const show = isNewLevel2 && level3Val !== "";
+  const wrap = document.getElementById("wbs-level2-title-wrap");
+  wrap.hidden = !show;
+  if (!show) document.getElementById("wbs-level2-title").value = "";
 }
 
 // 三级编号默认留空(=这个二级本身就是任务，不再往下分解)——只有明确已经存在三级子任务的
@@ -182,19 +211,24 @@ function onLevel2Change(sel) {
   const isNone = val === "__none__";
   const level3Input = document.getElementById("wbs-level3");
   document.getElementById("wbs-level2-new-wrap").hidden = !isNewLevel2;
-  document.getElementById("wbs-level2-title-wrap").hidden = !isNewLevel2;
-  if (isNewLevel2) document.getElementById("wbs-level2-title").value = "";
   level3Input.closest("label").hidden = isNone;
-  if (isNone) return;
+  if (isNone) {
+    updateLevel2TitleVisibility(isNewLevel2);
+    return;
+  }
   if (sel.isNew) {
     if (isNewLevel2) {
       document.getElementById("wbs-level2-new").value = 1;
       level3Input.value = "";
     }
+    updateLevel2TitleVisibility(isNewLevel2);
     return;
   }
   const project = projects.find((p) => p.id === sel.id);
-  if (project.tasks == null) return; // 同上，数据还没到
+  if (project.tasks == null) {
+    updateLevel2TitleVisibility(isNewLevel2);
+    return; // 同上，数据还没到
+  }
   const children = project.tasks;
   if (isNewLevel2) {
     const existingLevel2 = children.filter((c) => c.wbs_level2_number != null).map((c) => c.wbs_level2_number);
@@ -212,9 +246,13 @@ function onLevel2Change(sel) {
       level3Input.value = "";
     }
   }
+  updateLevel2TitleVisibility(isNewLevel2);
 }
 
 document.getElementById("wbs-level2-select").addEventListener("change", () => onLevel2Change(parseOwnerValue()));
+document.getElementById("wbs-level3").addEventListener("input", () => {
+  updateLevel2TitleVisibility(document.getElementById("wbs-level2-select").value === "__new__");
+});
 
 function refreshRecurringPreview(projectId) {
   const p = projects.find((x) => x.id === projectId);

@@ -30,6 +30,26 @@ function bumpVersion(text) {
   return `${m[1]}${m[2]}${Number(m[3]) + 1}`;
 }
 
+// 2026-07-24修复：computeCarryOverDefaults给出的"执行截止"是直接照抄上周plan条目的
+// execution_deadline——对一个"上周未完成"的任务，这个日期天然早于本周meeting_date。
+// buildPlanRowElement()用execution_deadline算f-start(计划开始)输入框的max、用
+// plan_start_date算f-deadline(执行截止)输入框的min，一旦这个默认值本身落在本周范围
+// 之外，f-start的min(本周meeting_date)就会大于max(这个过期日期)，日期选择器直接选不出
+// 任何值——用户必须先手动把执行截止改成本周内的日期，才能再选计划开始，这正是bug表现。
+// 所有"写进这周plan条目"的日期默认值统一夹到[meeting_date, work_week_end]区间内，从源头
+// 避免这个组合出现；没有默认值(null)时原样返回null，不强行编造一个日期。"早于本周"时具体
+// 夹到哪一端可以按字段语义区分：计划开始夹到meeting_date(本周一，"这周就开始/继续做")，
+// 执行截止夹到work_week_end(本周五，跟这个app别处"完成时间默认周五"的既有约定一致，比
+// 夹到meeting_date更符合"逾期任务这周重新安排一个能追的deadline"的直觉)。
+function clampDateToWeek(dateStr, week, { tooEarlyFallback = "meeting_date" } = {}) {
+  if (!dateStr) return null;
+  if (week.meeting_date && dateStr < week.meeting_date) {
+    return tooEarlyFallback === "work_week_end" ? week.work_week_end || week.meeting_date : week.meeting_date;
+  }
+  if (week.work_week_end && dateStr > week.work_week_end) return week.work_week_end;
+  return dateStr;
+}
+
 // 给定一个候选task_id，如果它在上周计划里也出现过，返回"应该默认沿用/递增的字段"；
 // 没出现过返回null(维持现状——新任务默认用task.target_deliverable，不做任何自动填充)。
 // 版本号递增只在"3级任务(detail.level3!=null)且本周不是最终计划完成周"时对交付物文字生效，
@@ -45,8 +65,8 @@ function computeCarryOverDefaults(taskId, prevPlanEntries, detail, targetWeek) {
   return {
     deliverable,
     hours: prev.planned_hours,
-    planStart: prev.plan_start_date,
-    executionDeadline: prev.execution_deadline,
+    planStart: clampDateToWeek(prev.plan_start_date, targetWeek),
+    executionDeadline: clampDateToWeek(prev.execution_deadline, targetWeek, { tooEarlyFallback: "work_week_end" }),
   };
 }
 
@@ -251,6 +271,12 @@ export function mountPlanSection(root, { allModules, allPeople }) {
         c.suggestedHours = carryDefaults.hours;
         c.suggestedPlanStart = carryDefaults.planStart;
         c.suggestedExecutionDeadline = carryDefaults.executionDeadline;
+      } else {
+        // 没有上周记录可沿用时，退回任务自己的最终计划完成时间(taskCandidateFields里
+        // 已经算好的c.execution_deadline)——但这同样可能是早于本周的过期日期(比如一个
+        // 已经逾期还没做完的截止日期类任务)，同样要夹进本周范围，否则会复现上面注释
+        // 说的min>max锁死问题。
+        c.suggestedExecutionDeadline = clampDateToWeek(c.execution_deadline, w, { tooEarlyFallback: "work_week_end" });
       }
     }
     // 2026-07-20用户反馈：上周未完成的任务应该排在本周新增前面(手动做PPT时的习惯顺序)。
@@ -444,7 +470,7 @@ export function mountPlanSection(root, { allModules, allPeople }) {
           planned_hours: tr.querySelector(".f-hours").value || null,
           priority_quadrant: tr.querySelector(".f-priority").value || null,
           plan_start_date: c.suggestedPlanStart ?? null,
-          execution_deadline: c.suggestedExecutionDeadline ?? c.execution_deadline ?? null,
+          execution_deadline: c.suggestedExecutionDeadline ?? null,
           resources_needed: "无",
           sort_order: ++currentMaxSortOrder,
         },
@@ -532,8 +558,14 @@ export function mountPlanSection(root, { allModules, allPeople }) {
         computeCarryOverSet(previousWeek),
         previousWeek ? listWeeklyTaskEntries(previousWeek.id, "plan") : Promise.resolve([]),
       ]);
-      // 2026-07-20新增：手动添加同样套用跟自动候选池一样的"沿用上周计划字段"逻辑
+      // 2026-07-20新增：手动添加同样套用跟自动候选池一样的"沿用上周计划字段"逻辑；
+      // 2026-07-24修复：没有上周记录可沿用时的兜底(c.execution_deadline，任务自己的最终
+      // 计划完成时间)同样可能早于本周范围，跟自动候选池一样要clampDateToWeek，否则会
+      // 复现"计划开始"选择器min>max锁死的bug(见computeCarryOverDefaults上方注释)。
       const carryDefaults = computeCarryOverDefaults(c.task_id, prevPlanEntries, c.detail, week);
+      const executionDeadline = carryDefaults
+        ? carryDefaults.executionDeadline
+        : clampDateToWeek(c.execution_deadline, week, { tooEarlyFallback: "work_week_end" });
       const row = {
         meeting_week_id: week.id,
         appears_in: "plan",
@@ -544,7 +576,7 @@ export function mountPlanSection(root, { allModules, allPeople }) {
         deliverable_this_week: carryDefaults?.deliverable ?? c.deliverable_this_week,
         planned_hours: carryDefaults?.hours ?? null,
         plan_start_date: carryDefaults?.planStart ?? null,
-        execution_deadline: carryDefaults?.executionDeadline ?? c.execution_deadline ?? null,
+        execution_deadline: executionDeadline ?? null,
         resources_needed: "无",
         sort_order: ++currentMaxSortOrder,
       };
