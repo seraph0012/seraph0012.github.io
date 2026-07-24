@@ -67,8 +67,50 @@ const TITLE_COLS = [2, 3, 4];
 // row传的是blankRepeatingColumns处理过之后的最终文本(即将写进单元格的内容)——同一个标题
 // 列如果文本是空的(没有3级任务时level3Text本来就是""，或者该列因为跟上一行重复被合并
 // 逻辑清空)，就不该上色，不然会出现一个染色但看起来空空如也的单元格(2026-07-16用户反馈)。
-function rowFills(highlight, row) {
-  return row.map((text, c) => (highlight && TITLE_COLS.includes(c) && text !== "" ? "highlight" : "white"));
+// mergedHighlight是mergedColHighlight()算出的"这一行(如果是合并区间起点)所在的合并区间
+// 内，是否有任意成员被标记重点"，只对col 2/3(1级/2级，同时也是MERGE_COLS的一部分)有意义——
+// 2026-07-24用户反馈的真实bug：OOXML竖向合并单元格里，PowerPoint渲染整块合并区域用的是
+// "起点单元格"自己的格式，延续行单元格的格式在mergeVerticalCells()里会被整个清空(见
+// pptxTable.js的mergeRange())。如果被标记重点的3级任务恰好挂在一个"1级/2级单元格已经跟
+// 上面几行合并在一起、起点行本身没被标记重点"的位置，只看这一行自己的highlight算出来的
+// 起点单元格填色永远是白色，整块合并区域都不会显示重点色——必须看"这个合并区间里有没有
+// 任意一行被标记重点"，而不是只看起点行自己。
+function rowFills(highlight, row, mergedHighlight = {}) {
+  return row.map((text, c) => {
+    if (!TITLE_COLS.includes(c) || text === "") return "white";
+    const effective = mergedHighlight[c] !== undefined ? mergedHighlight[c] : highlight;
+    return effective ? "highlight" : "white";
+  });
+}
+
+// 按跟blankRepeatingColumns完全一致的分组规则(相邻行原始值相等 + dependency父列在区间内
+// 不变)，对cols里每一列算出"合并区间起点那一行，这个区间内是否有任意一行被标记重点"——
+// 只在起点行的返回对象里写入这一列的结果(非起点行不写，调用方据此判断"这一行是不是这一列
+// 的合并起点"，不是起点的话直接沿用它自己的highlight即可，反正延续行的填色会被合并逻辑
+// 整个清空，写不写都不影响最终视觉效果)。rows必须是原始(未blank)的行数组，因为分组边界
+// 判断依据的是相邻原始值是否相等，跟blankRepeatingColumns内部用的比较基准完全一致。
+function mergedColHighlight(rows, highlights, cols, dependency = {}) {
+  const result = rows.map(() => ({}));
+  for (const c of cols) {
+    const parent = dependency[c];
+    let groupStart = 0;
+    let groupAny = !!highlights[0];
+    for (let i = 1; i <= rows.length; i++) {
+      const isEnd = i === rows.length;
+      const parentChanged = !isEnd && parent !== undefined && rows[i][parent] !== rows[i - 1][parent];
+      const breakGroup = isEnd || rows[i][c] !== rows[i - 1][c] || parentChanged;
+      if (breakGroup) {
+        result[groupStart][c] = groupAny;
+        if (!isEnd) {
+          groupStart = i;
+          groupAny = !!highlights[i];
+        }
+      } else {
+        groupAny = groupAny || !!highlights[i];
+      }
+    }
+  }
+  return result;
 }
 
 // entries不在这里重排——2026-07-15起改成直接沿用weekly_task_entries.sort_order的顺序
@@ -101,10 +143,11 @@ function buildPlanLikeRows(entries, detailMap, moduleNameById, { executionColumn
       e.resources_needed || "无",
     ];
   });
-  const blanked = blankRepeatingColumns(rows, [0, 1, 2, 3], { 3: 2 });
+  const blanked = blankRepeatingColumns(rows, MERGE_COLS, MERGE_DEPENDENCY);
+  const mergedHighlight = mergedColHighlight(rows, sorted.map((e) => !!e.highlight), MERGE_COLS, MERGE_DEPENDENCY);
   const PRIORITY_COL = 12;
   return blanked.map((row, i) => {
-    const fills = rowFills(!!sorted[i].highlight, row);
+    const fills = rowFills(!!sorted[i].highlight, row, mergedHighlight[i]);
     return row.map((text, c) => ({
       text,
       fill: fills[c],
@@ -135,10 +178,11 @@ function buildSummaryRows(entries, detailMap, moduleNameById) {
       monthDayLabel(detail.completionDate),
     ];
   });
-  const blanked = blankRepeatingColumns(rows, [0, 1, 2, 3], { 3: 2 });
+  const blanked = blankRepeatingColumns(rows, MERGE_COLS, MERGE_DEPENDENCY);
+  const mergedHighlight = mergedColHighlight(rows, sorted.map((e) => !!e.highlight), MERGE_COLS, MERGE_DEPENDENCY);
   const RISK_COL = 11;
   return blanked.map((row, i) => {
-    const fills = rowFills(!!sorted[i].highlight, row);
+    const fills = rowFills(!!sorted[i].highlight, row, mergedHighlight[i]);
     return row.map((text, c) => ({
       text,
       fill: fills[c],
