@@ -19,8 +19,10 @@
     <li>一条交付物文字里写了两行 —— 应该拆成两条独立的文件</li>
     <li>一条模拟"未完成但用时不为0"的部分交付物 —— 应该正常出现在截图里（不按任务完成状态过滤）</li>
     <li>一条交付物文字是"无" —— 应该被排除，不出现在截图里</li>
-    <li>一条没选"交付物类型"（历史数据/用户没填）—— 应该退化成通用文件图标</li>
+    <li>一条没选"交付物类型"（历史数据/用户没填）—— 应该退化成中性的通用文件图标（不画色带）</li>
+    <li>一条名字很长的文件 —— 验证画布宽度会撑开、超过上限时省略号截断是否正常</li>
   </ul>
+  <p>2026-07-29第二版反馈调整：去掉了标题栏/表头/修改日期列/类型列，只保留图标+文件名；图标从emoji改成手绘的"翻角页面+色带徽标"样式（folder类型是独立的文件夹形状）；背景统一白色，字体改成Windows常用的Segoe UI/微软雅黑。</p>
 
   <canvas id="demo-canvas"></canvas>
   <button type="button" id="download-btn">下载PNG</button>
@@ -43,13 +45,14 @@
       { deliverable_file_type: "pptx", deliverable_this_week: "无" }, // 用时为0，应被排除
       { deliverable_file_type: "xlsx", deliverable_this_week: "" }, // 空文本，应被排除
       { deliverable_file_type: "", deliverable_this_week: "未分类的杂项说明.rtf" }, // 没选类型，退化成通用图标
+      { deliverable_file_type: "docx", deliverable_this_week: "这是一个用来测试超长文件名截断效果的示例文档名称_供参考核对显示效果.docx" },
     ];
 
-    const items = buildDeliverableItemsFromEntries(testEntries, "2026-07-20");
-    console.log(`共生成 ${items.length} 条截图项(测试数据12条entries，其中2条应被排除)`, items);
+    const items = buildDeliverableItemsFromEntries(testEntries);
+    console.log(`共生成 ${items.length} 条截图项(测试数据13条entries，其中2条应被排除)`, items);
 
     const canvas = document.getElementById("demo-canvas");
-    renderDeliverableScreenshot(canvas, items, { folderTitle: "交付物_2026-07-20" });
+    renderDeliverableScreenshot(canvas, items);
 
     document.getElementById("download-btn").addEventListener("click", () => {
       canvas.toBlob((blob) => {
