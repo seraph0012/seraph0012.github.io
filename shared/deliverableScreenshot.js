@@ -60,7 +60,11 @@ const ROW_HEIGHT = 28;
 const MIN_WIDTH = 240;
 const MAX_WIDTH = 520;
 const FONT = `13px "Segoe UI", "Microsoft YaHei", sans-serif`;
-const HEADER_FONT = `bold 12px "Segoe UI", "Microsoft YaHei", sans-serif`;
+// 2026-07-29用户反馈："名称"表头字体应该跟下面文件名称的字体差不多，只是颜色比较灰
+// （不是加粗/更小号）——所以直接复用FONT，不单独定义粗体表头字号。
+const HEADER_FONT = FONT;
+// 表头文字的左边界应该比图标左边界稍微靠右一点（不能跟图标严格对齐），这里往右挪4px。
+const HEADER_TEXT_INDENT = 4;
 
 // 粗略估算文字像素宽度(不需要真实canvas/ctx，computeLayout保持纯函数好独立测试)——全角字符
 // (中文/中文标点)按13px字号约14px一个算，半角(英文数字/符号)约7px一个算，够用来估画布宽度，
@@ -111,12 +115,15 @@ export function drawToContext(ctx, layout, items, iconMap = {}) {
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, width, height);
 
-  // 表头：只保留"名称"这一列(2026-07-29用户明确要求去掉修改日期/类型列，但要留表头)
+  // 表头：只保留"名称"这一列(2026-07-29用户明确要求去掉修改日期/类型列，但要留表头)。
+  // 表头文字字体跟下面文件名一致(FONT)，只是颜色更灰；左边界比图标左边界稍微靠右一点
+  // (HEADER_TEXT_INDENT)，不跟图标严格对齐——这两点都是2026-07-29用户对照真实资源管理器
+  // 截图明确指出的观感差异。
   ctx.fillStyle = "#666666";
   ctx.font = HEADER_FONT;
   ctx.textAlign = "left";
   ctx.textBaseline = "middle";
-  ctx.fillText("名称", padding, headerHeight / 2);
+  ctx.fillText("名称", padding + HEADER_TEXT_INDENT, headerHeight / 2);
   ctx.strokeStyle = "#e0e0e0";
   ctx.lineWidth = 1;
   ctx.beginPath();
