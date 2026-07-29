@@ -63,13 +63,22 @@ const PLAN_NATIVE_FIELDS = [
 
 // tr: "本周计划"表格的一行<tr>；detail: buildSourceDetailMap()查出来的这个任务的详情
 export function validatePlanEntry(tr, detail) {
-  const errors = [...checkNativeFields(tr, PLAN_NATIVE_FIELDS), ...crossPageErrors(detail)];
-  // A11：任务本身状态已经是"已完成"/"中止"，却还留在本周计划里——任务状态可以在"任务
-  // 管理"页面被单独改动，这张表不会自动感知到，不是靠输入框限制能防住的错误。
+  return [...checkNativeFields(tr, PLAN_NATIVE_FIELDS), ...crossPageErrors(detail)];
+}
+
+// A11(非阻断提醒，2026-07-29从"阻断错误"降级)：任务本身状态已经是"已完成"/"中止"，却还
+// 留在计划表格里。2026-07-20最初设计成阻断保存，但这个设计有个真实缺口：任务完成状态
+// 常常就是"这一周计划→(下)一周总结"这个正常流程本身导致的——任务排进了某一周计划，
+// 后来总结把它标成已完成，这是预期结果不是错误。事后回头订正那一周计划的其它字段(改个
+// 日期/交付物文字)完全合理，却会被这条规则拦住保存，而且拦住之后没有绕过的办法：候选池
+// (generateCandidatePool)和手动搜索(listAllActiveCandidates)都排除了已完成/中止的任务，
+// 删掉这一行想重新加回来也加不回——等于把用户锁死。改成非阻断提醒，跟"未续排"提醒同一种
+// 呈现方式，只在保存成功后追加进结果文字，不标红、不影响保存。
+export function planEntryWarning(detail) {
   if (detail && (detail.sourceStatus === "已完成" || detail.sourceStatus === "中止")) {
-    errors.push({ field: "task-col", message: `任务${detail.sourceStatus}，不应再排入计划` });
+    return `任务${detail.sourceStatus}，仍留在计划里(如果是订正历史周，这是正常情况)`;
   }
-  return errors;
+  return null;
 }
 
 const SUMMARY_NATIVE_FIELDS = [

@@ -17,7 +17,7 @@ import {
   wbsNumber,
 } from "./taskLabels.js";
 import { dateWithWeekday, weekdayLabel } from "./dateUtils.js";
-import { validatePlanEntry } from "./entryValidation.js";
+import { validatePlanEntry, planEntryWarning } from "./entryValidation.js";
 import { renderTaskPicker } from "./taskPicker.js";
 import { moveRow } from "./rowReorder.js";
 
@@ -713,14 +713,17 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     // 两组，再各自处理。
     const validRows = [];
     const problemLines = [];
+    const warningLines = [];
     for (const tr of rows) {
       const detail = detailMap.get(Number(tr.dataset.taskId)) || {};
+      const label = wbsNumber(detail.level1, detail.level2, detail.level3);
+      const warning = planEntryWarning(detail);
+      if (warning) warningLines.push(`${label}：${warning}`);
       const errors = validatePlanEntry(tr, detail);
       if (errors.length === 0) {
         validRows.push(tr);
         continue;
       }
-      const label = wbsNumber(detail.level1, detail.level2, detail.level3);
       for (const { field, message } of errors) {
         const el = tr.querySelector(`.${field}`);
         if (el) {
@@ -755,11 +758,17 @@ export function mountPlanSection(root, { allModules, allPeople }) {
         validRows.length === 0
           ? `保存失败，${problemLines.length}处未通过校验（已标红，鼠标悬停可看原因）：\n${problemLines.join("\n")}`
           : `已保存${validRows.length}条，另有${problemLines.length}处未通过校验没有保存（已标红，鼠标悬停可看原因）：\n${problemLines.join("\n")}`;
+      if (warningLines.length > 0) {
+        resultEl.textContent += `\n提醒：${warningLines.join("；")}`;
+      }
       resultEl.className = "save-plan-result status error";
       throw new Error("部分行未通过校验");
     }
 
     resultEl.textContent = `已保存 ${validRows.length} 条`;
+    if (warningLines.length > 0) {
+      resultEl.textContent += `｜提醒：${warningLines.join("；")}`;
+    }
     resultEl.className = "save-plan-result status ok";
     try {
       const missing = await checkUnscheduledIncomplete();

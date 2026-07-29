@@ -4,16 +4,25 @@
 // "名称"这一列的样子。
 //
 // 2026-07-29第三版：用户反馈手绘的翻角页面图标"还不如上一版"，要求"表头还是要截进去的，
-// 只需要'名称'这一列就够了"，并且要求用真实的Windows/WPS图标(用户日常用WPS而不是
-// Microsoft Office)。手绘图标改成直接使用从这台机器上WPS安装目录里的wpsofficeicon.dll
-// 现取的真实图标(通过读取HKEY_CLASSES_ROOT里WPS.Docx.6/KET.Sheet.12/KWPP.Presentation.12/
-// KWPS.PDF.9/WPS.ARC.zip这几个WPS自己的ProgID的DefaultIcon注册表值，定位到具体是
-// wpsofficeicon.dll的第几号资源，再用PrivateExtractIcons在256x256分辨率下提取导出成PNG——
-// 不是从当前系统"默认关联程序"直接截(这台机器.docx当前默认关联的是Microsoft Word，会拿到
-// Office的图标而不是WPS的)，图片/文件夹/未选择类型三个用的是Windows系统自带图标(WPS不会
-// 覆盖这几类的图标，没有额外找WPS版本的必要)。图标资源以PNG形式存在`web/assets/icons/`，
-// 这个模块负责预加载+按需绘制，不再在运行时手绘图形。设计细节见
-// tools/.claude/plans/plan-deliverable-screenshot.md。
+// 只需要'名称'这一列就够了"，并要求用真实的WPS图标——第一次尝试用Windows API
+// (SHGetFileInfo+PrivateExtractIcons)从WPS安装目录的wpsofficeicon.dll现取256x256大图标，
+// 结果用户反馈"和我实际看到的不一样"；换成直接从真实文件(而不是拿扩展名假装查)提取，
+// 同一次运行里docx提出来的图标对、但xlsx/pptx却提取成了空白通用图标——这条路线本身不可靠
+// (Windows图标系统在"jumbo"大图标缓存上有已知的时序/缓存问题，没法保证每次都拿到正确结果)。
+// 2026-07-29第四版：用户直接提供了自己Windows资源管理器"列表"视图的真实截图
+// (`tools/refs/示例截图.png`)，不再靠程序化猜测。第一次裁剪按肉眼估的固定行高/固定框裁剪，
+// 结果偏差很大——把相邻两个图标各截了一半、图标本身占比很小、边缘还带进了文件名最左侧的
+// 一撇。改成完全基于像素内容的裁剪算法(numpy)：先按"每一行有没有非白色像素"切出7个图标+
+// 文件名所在的行(不是靠肉眼数固定行高)，再在每一行内按"每一列有没有非白色像素"找列方向的
+// 连续色块——图标和文件名之间天然有一段空白列做分隔，图标永远是最左边那一块连续色块，据此
+// 精确定位图标自己的最小外接矩形(加1px留白)，裁出来的才是图标本身，不多带旁边的文件名文字，
+// 也不会跨到下一行/上一行的图标。这样裁出来的图标原生只有约17x18像素(folder/zip更扁一些，
+// 分别约18x15/18x14)——保留各自真实宽高比，渲染时用Math.min(iconSize/宽,iconSize/高)等比
+// 缩放后居中放进图标格，不强行拉伸变形。生成截图用不到的类型("未选择"/"其他")沿用Windows
+// 系统自带的通用文件图标(跟用户截图无关，够中性)。前两版程序化提取的图标(WPS DLL资源提取/
+// 当前默认关联提取)都已作废并被替换——这是唯一真正跟用户实际看到的一致的来源。
+// 图标资源以PNG形式存在`web/assets/icons/`，这个模块负责预加载+按需绘制，不再在运行时手绘
+// 图形。设计细节见tools/.claude/plans/plan-deliverable-screenshot.md。
 //
 // value / 下拉框中文标签 / assets/icons/下对应的图标文件名(不含扩展名)
 export const DELIVERABLE_TYPE_OPTIONS = [
@@ -141,9 +150,19 @@ export function drawToContext(ctx, layout, items, iconMap = {}) {
 
   items.forEach((item, i) => {
     const rowY = bodyTop + i * rowHeight;
-    const iconY = rowY + (rowHeight - iconSize) / 2;
     const img = iconMap[item.icon];
-    if (img) ctx.drawImage(img, padding, iconY, iconSize, iconSize);
+    if (img) {
+      // 图标素材是直接从用户截图裁剪出来的真实图标(2026-07-29第四版)，folder/zip这些原生
+      // 宽高比不是正方形——按iconSize等比缩放、居中放进图标格，不强行拉伸变形。
+      const naturalW = img.naturalWidth || img.width || iconSize;
+      const naturalH = img.naturalHeight || img.height || iconSize;
+      const scale = Math.min(iconSize / naturalW, iconSize / naturalH);
+      const drawW = naturalW * scale;
+      const drawH = naturalH * scale;
+      const iconX = padding + (iconSize - drawW) / 2;
+      const iconY = rowY + (rowHeight - drawH) / 2;
+      ctx.drawImage(img, iconX, iconY, drawW, drawH);
+    }
 
     ctx.fillStyle = "#1a1a1a";
     ctx.font = FONT;
