@@ -1,0 +1,12 @@
+-- 2026-07-29："交付物文件夹截图"功能（阶段二）——weekly_task_entries加deliverable_file_type
+-- (自由文本，不加CHECK约束)。只在appears_in='summary'的行里真正用到，跟risk_level/risk_note
+-- 这些"summary专属列"是同一种表结构上的既有约定，不建新表。
+--
+-- 可选值集合由前端shared/deliverableScreenshot.js的DELIVERABLE_TYPE_OPTIONS枚举维护
+-- (""/pptx/docx/xlsx/pdf/image/zip/folder/other)，不在数据库层强制枚举——以后要加新类型
+-- 选项(比如常见的其它格式)不需要再跑一次migration。
+--
+-- 不设必填：历史行/用户没选时按""(未选择)处理，生成截图时退化成通用文件图标；不在
+-- entryValidation.js加新的必填校验规则，保存/锁定流程不应该因为这个纯粹用于生成截图的
+-- 可选字段而被卡住。
+alter table weekly_task_entries add column if not exists deliverable_file_type text;

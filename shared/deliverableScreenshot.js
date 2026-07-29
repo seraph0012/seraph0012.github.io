@@ -24,28 +24,38 @@
 // 图标资源以PNG形式存在`web/assets/icons/`，这个模块负责预加载+按需绘制，不再在运行时手绘
 // 图形。设计细节见tools/.claude/plans/plan-deliverable-screenshot.md。
 //
-// value / 下拉框中文标签 / assets/icons/下对应的图标文件名(不含扩展名)
+// value / 下拉框中文标签 / assets/icons/下对应的图标文件名(不含扩展名) / 这个类型对应的文件
+// 扩展名(null=不知道该补什么后缀，比如"文件夹"本来就没有后缀、"未选择/其他"没法猜)。
 export const DELIVERABLE_TYPE_OPTIONS = [
-  { value: "", label: "(未选择)", icon: "generic" },
-  { value: "pptx", label: "PPT文件", icon: "pptx" },
-  { value: "docx", label: "Word文件", icon: "docx" },
-  { value: "xlsx", label: "Excel文件", icon: "xlsx" },
-  { value: "pdf", label: "PDF文件", icon: "pdf" },
-  { value: "image", label: "图片", icon: "image" },
-  { value: "zip", label: "压缩包", icon: "zip" },
-  { value: "folder", label: "文件夹(多文件，如代码)", icon: "folder" },
-  { value: "other", label: "其他文件", icon: "generic" },
+  { value: "", label: "(未选择)", icon: "generic", ext: null },
+  { value: "pptx", label: "PPT文件", icon: "pptx", ext: ".pptx" },
+  { value: "docx", label: "Word文件", icon: "docx", ext: ".docx" },
+  { value: "xlsx", label: "Excel文件", icon: "xlsx", ext: ".xlsx" },
+  { value: "pdf", label: "PDF文件", icon: "pdf", ext: ".pdf" },
+  { value: "image", label: "图片", icon: "image", ext: ".png" },
+  { value: "zip", label: "压缩包", icon: "zip", ext: ".zip" },
+  { value: "folder", label: "文件夹(多文件，如代码)", icon: "folder", ext: null },
+  { value: "other", label: "其他文件", icon: "generic", ext: null },
 ];
 
 export const DELIVERABLE_TYPE_MAP = Object.fromEntries(DELIVERABLE_TYPE_OPTIONS.map((t) => [t.value, t]));
 
 const EMPTY_MESSAGE = "本周没有可展示的交付物";
 
+// 判断文字末尾是不是已经像个文件后缀(.xxx，1~5位字母数字)——用户自己在"本周交付材料"里
+// 打了后缀的话(比如"报告.doc"，即使跟选的类型不完全一致)要原样尊重，不重复叠加。
+const EXTENSION_PATTERN = /\.[A-Za-z0-9]{1,5}$/;
+
 // entries: weekly_task_entries里appears_in='summary'的行数组，每行至少有
 // deliverable_this_week/deliverable_file_type两个字段。按换行拆行，每一行(排除空文本和
 // 占位符"无")变成截图里独立一条——不按任务status过滤：未完成但用时不为0的任务一样可能有
 // 真实的部分交付物要出现在截图里，"无"这个占位符本身才是"没有交付物"的信号(呼应
 // entryValidation.js的E5/E6规则：用时为0要求交付物填"无"，此时不该出现在截图里)。
+//
+// 2026-07-29用户反馈"文件名是要有后缀的，现在没有"——"本周交付材料"这个字段本来就是给
+// 人念的描述性文字，很多时候不会习惯性带上".pptx"这种后缀，但截图要看起来像真的文件列表，
+// 没后缀就不像。这里按选定的"交付物类型"自动补上对应后缀(已经自己带了看起来像后缀的文字
+// 就不重复补，尊重用户原样输入)。
 export function buildDeliverableItemsFromEntries(entries) {
   const items = [];
   for (const e of entries) {
@@ -54,7 +64,8 @@ export function buildDeliverableItemsFromEntries(entries) {
       .split("\n")
       .map((s) => s.trim())
       .filter((s) => s !== "" && s !== "无");
-    for (const name of lines) {
+    for (const raw of lines) {
+      const name = t.ext && !EXTENSION_PATTERN.test(raw) ? `${raw}${t.ext}` : raw;
       items.push({ name, icon: t.icon });
     }
   }

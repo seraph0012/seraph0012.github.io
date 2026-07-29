@@ -1,6 +1,6 @@
 import { requireAuth } from "./shared/authGuard.js";
 import { renderNav } from "./shared/nav.js";
-import { listModules, listPeople, listMeetingWeeks } from "./shared/db.js";
+import { listModules, listPeople, listMeetingWeeks, listWeeklyTaskEntries } from "./shared/db.js";
 import { mountSummarySection } from "./shared/summarySection.js";
 import { mountPlanSection } from "./shared/planSection.js";
 import { mountStoppedSection } from "./shared/stoppedSection.js";
@@ -8,6 +8,7 @@ import { mountTaskCreateSection } from "./shared/taskCreateSection.js";
 import { generatePptForWeek, buildReportRows } from "./shared/pptGenerate.js";
 import { renderPreviewTables } from "./shared/tablePreview.js";
 import { cacheFirst } from "./shared/localCache.js";
+import { buildDeliverableItemsFromEntries, renderDeliverableScreenshot } from "./shared/deliverableScreenshot.js";
 
 const session = await requireAuth();
 if (!session) {
@@ -67,6 +68,13 @@ async function applyWeek(week) {
     await stoppedCtrl.setWeek(targetWeek);
     // 切周之后预览区还留着上一个周的内容会造成误导，直接清空，用户要看新的周就重新点"预览"
     document.getElementById("preview-root").innerHTML = "";
+    // 交付物截图同理——是previousWeek的数据，切周后原来那张图不再对应当前选的周，清空掉
+    // (canvas.width=0是清空画布内容最简单的写法，比getContext('2d').clearRect()更直接)。
+    const screenshotCanvas = document.getElementById("deliverable-screenshot-canvas");
+    screenshotCanvas.width = 0;
+    screenshotCanvas.height = 0;
+    document.getElementById("download-screenshot-btn").hidden = true;
+    document.getElementById("screenshot-result").textContent = "";
   } catch (err) {
     console.error("[index] 切换目标周失败", err);
     infoEl.textContent = `切换周失败：${err.message}（详情见浏览器控制台F12）`;
@@ -112,6 +120,52 @@ document.getElementById("generate-ppt-btn").addEventListener("click", async () =
     resultEl.textContent = `失败：${err.message}`;
     resultEl.className = "status error";
   }
+});
+
+// "交付物文件夹截图"——数据来自previousWeek的"上周总结"(跟①上周总结区块是同一份数据源，
+// 呼应"总结的deliverable_this_week才是本周实际交付了什么"这个既有设计)。点"生成截图"直接
+// 把图画到页面上的canvas里当预览(所见即所得，不需要像PPT那样单独一个"预览"按钮)，满意了
+// 再点"下载PNG"单独下载。
+document.getElementById("generate-screenshot-btn").addEventListener("click", async () => {
+  const resultEl = document.getElementById("screenshot-result");
+  const downloadBtn = document.getElementById("download-screenshot-btn");
+  if (!previousWeek) {
+    resultEl.textContent = "没有上周总结数据（没有更早的例会周）";
+    resultEl.className = "status warn";
+    downloadBtn.hidden = true;
+    return;
+  }
+  resultEl.textContent = "生成中...";
+  resultEl.className = "status";
+  downloadBtn.hidden = true;
+  try {
+    const entries = await listWeeklyTaskEntries(previousWeek.id, "summary");
+    const items = buildDeliverableItemsFromEntries(entries);
+    const canvas = document.getElementById("deliverable-screenshot-canvas");
+    await renderDeliverableScreenshot(canvas, items);
+    if (items.length === 0) {
+      resultEl.textContent = `本周没有填写"本周交付材料"文字的总结条目`;
+      resultEl.className = "status warn";
+    } else {
+      resultEl.textContent = `已生成 ${items.length} 项`;
+      resultEl.className = "status ok";
+      downloadBtn.hidden = false;
+    }
+  } catch (err) {
+    resultEl.textContent = `失败：${err.message}`;
+    resultEl.className = "status error";
+  }
+});
+
+document.getElementById("download-screenshot-btn").addEventListener("click", () => {
+  const canvas = document.getElementById("deliverable-screenshot-canvas");
+  canvas.toBlob((blob) => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `交付物_${previousWeek.meeting_date}.png`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }, "image/png");
 });
 
 async function init() {

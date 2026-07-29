@@ -35,9 +35,9 @@
     // 模拟weekly_task_entries里appears_in='summary'的行，字段名跟真实db.js返回的一致，
     // 方便阶段二直接把真实查询结果原样传进buildDeliverableItemsFromEntries()而不用改这个函数。
     const testEntries = [
-      { deliverable_file_type: "pptx", deliverable_this_week: "季度采购分析报告.pptx" },
+      { deliverable_file_type: "pptx", deliverable_this_week: "季度采购分析报告" }, // 故意不写后缀，验证自动补.pptx
       { deliverable_file_type: "docx", deliverable_this_week: "供应商评估方案说明.docx" },
-      { deliverable_file_type: "xlsx", deliverable_this_week: "预算测算表.xlsx" },
+      { deliverable_file_type: "xlsx", deliverable_this_week: "预算测算表" }, // 故意不写后缀，验证自动补.xlsx
       { deliverable_file_type: "pdf", deliverable_this_week: "验收报告.pdf" },
       { deliverable_file_type: "image", deliverable_this_week: "系统架构图.png" },
       { deliverable_file_type: "zip", deliverable_this_week: "部署包.zip" },

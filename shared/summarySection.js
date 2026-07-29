@@ -20,6 +20,7 @@ import {
 import { validateSummaryEntry } from "./entryValidation.js";
 import { renderTaskPicker } from "./taskPicker.js";
 import { moveRow } from "./rowReorder.js";
+import { DELIVERABLE_TYPE_OPTIONS } from "./deliverableScreenshot.js";
 
 const STATUS_OPTIONS = ["", "已完成", "未完成", "中止", "未启动"];
 const RISK_OPTIONS = [
@@ -162,6 +163,13 @@ export function mountSummarySection(root, { allModules, allPeople }) {
   function riskOptionsHtml(selected) {
     return RISK_OPTIONS.map(
       ([v, l]) => `<option value="${v}" ${v === (selected || "") ? "selected" : ""}>${l}</option>`
+    ).join("");
+  }
+  // "交付物类型"下拉——供"交付物文件夹截图"功能挑选图标用(见shared/deliverableScreenshot.js)。
+  // 唯一权威选项列表定义在那个模块里，这里直接复用，不重复维护一份容易走样的选项。
+  function deliverableTypeOptionsHtml(selected) {
+    return DELIVERABLE_TYPE_OPTIONS.map(
+      (t) => `<option value="${t.value}" ${t.value === (selected || "") ? "selected" : ""}>${t.label}</option>`
     ).join("");
   }
 
@@ -348,7 +356,7 @@ export function mountSummarySection(root, { allModules, allPeople }) {
       <td class="task-col readonly-col">${detail.level2Text || ""}</td>
       <td class="task-col readonly-col">${detail.level3Text || ""}</td>
       <td class="readonly-col">${e.owner || ""}</td>
-      <td><textarea class="f-deliverable" rows="2" required ${dis}>${escapeHtml(e.deliverable_this_week)}</textarea></td>
+      <td><textarea class="f-deliverable" rows="2" required ${dis}>${escapeHtml(e.deliverable_this_week)}</textarea><select class="f-deliverable-type" ${dis}>${deliverableTypeOptionsHtml(e.deliverable_file_type)}</select></td>
       <td><select class="f-status" required ${dis}>${statusOptionsHtml(e.status)}</select></td>
       <td><input type="number" class="f-hours" step="0.5" min="0" required value="${e.actual_hours ?? ""}" ${dis} /></td>
       <td><textarea class="f-reason" rows="2" ${reqReason} ${disReason}>${escapeHtml(e.incomplete_reason)}</textarea></td>
@@ -464,6 +472,7 @@ export function mountSummarySection(root, { allModules, allPeople }) {
         const deliverableThisWeek = tr.querySelector(".f-deliverable").value || null;
         await updateWeeklyTaskEntry(entryId, {
           deliverable_this_week: deliverableThisWeek,
+          deliverable_file_type: tr.querySelector(".f-deliverable-type").value || null,
           actual_hours: tr.querySelector(".f-hours").value || null,
           status,
           incomplete_reason: isIncomplete ? tr.querySelector(".f-reason").value || null : null,
