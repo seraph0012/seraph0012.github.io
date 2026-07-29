@@ -46,17 +46,11 @@ const TEMPLATE = `
         <span class="new-project-fields" hidden>
           <label class="new-project-title-wrap">项目名 <input type="text" class="new-project-title" style="min-width:160px" /></label>
           <label>编号 <input type="number" class="new-project-number" style="width:5em" /></label>
-          <span class="new-project-extra-wrap">
-            <label>分类 <input type="text" class="new-project-category" style="width:8em" /></label>
-            <label>项目截止日期 <input type="date" class="new-project-deadline" /></label>
-            <label>项目最终交付物 <input type="text" class="new-project-deliverable" style="min-width:140px" /></label>
-          </span>
+          <label class="new-project-deadline-wrap" hidden>项目截止日期 <input type="date" class="new-project-deadline" /></label>
         </span>
 
         <span class="leaf-fields" hidden>
           <label>标题 <input type="text" class="leaf-title" style="min-width:160px" /></label>
-          <label>模块 <select class="leaf-module"></select></label>
-          <label>责任人 <select class="leaf-owner"></select></label>
           <label>二级编号 <select class="wbs-level2-select"></select></label>
           <span class="wbs-level2-new-wrap" hidden>新二级编号 <input type="number" class="wbs-level2-new" style="width:5em" /></span>
           <span class="wbs-level2-title-wrap" hidden>二级标题 <input type="text" class="wbs-level2-title" style="min-width:140px" /></span>
@@ -69,8 +63,6 @@ const TEMPLATE = `
         <span class="recurring-new-fields" hidden>
           <label>动词前缀 <input type="text" class="recurring-title-verb" style="width:6em" placeholder="如：制作" /></label>
           <label>名词部分(交付物基础名) <input type="text" class="recurring-title-noun" style="min-width:140px" placeholder="如：周例会PPT" /></label>
-          <label>模块 <select class="recurring-module"></select></label>
-          <label>责任人 <select class="recurring-owner-select"></select></label>
           <label>频率
             <select class="recurring-frequency">
               <option value="weekly">weekly</option>
@@ -80,6 +72,8 @@ const TEMPLATE = `
           </label>
           <label>第一次的例会周 <select class="recurring-first-week"></select></label>
         </span>
+
+        <p class="assignee-display status" hidden></p>
 
         <span class="recurring-instance-fields" hidden>
           <p class="recurring-instance-preview status"></p>
@@ -92,19 +86,13 @@ const TEMPLATE = `
   </details>
 `;
 
-function moduleOptionsHtmlStrict(allModules, selectedId) {
-  if (allModules.length === 0) return `<option value="">(请先去"设置"页面添加)</option>`;
-  return allModules.map((m) => `<option value="${m.id}" ${m.id === selectedId ? "selected" : ""}>${m.name}</option>`).join("");
+// 模块/责任人不再在这个表单里现场挑选——2026-07-29用户明确要求："设置"页面的
+// "当前模块"/"当前责任人"已经是全局唯一权威来源，这里直接静默套用，不重复提供一次选择UI。
+function currentModule(allModules) {
+  return allModules.find((m) => m.is_current) ?? (allModules.length === 1 ? allModules[0] : null);
 }
-function soleModuleId(allModules) {
-  return allModules.find((m) => m.is_current)?.id ?? (allModules.length === 1 ? allModules[0].id : null);
-}
-function peopleOptionsHtml(allPeople, selectedName) {
-  if (allPeople.length === 0) return `<option value="">(请先去"设置"页面添加)</option>`;
-  return allPeople.map((p) => `<option value="${p.name}" ${p.name === selectedName ? "selected" : ""}>${p.name}</option>`).join("");
-}
-function solePersonName(allPeople) {
-  return allPeople.find((p) => p.is_current)?.name ?? (allPeople.length === 1 ? allPeople[0].name : null);
+function currentPerson(allPeople) {
+  return allPeople.find((p) => p.is_current) ?? (allPeople.length === 1 ? allPeople[0] : null);
 }
 function weekOptionsHtml(allWeeksRaw) {
   return allWeeksRaw.map((w) => `<option value="${w.id}">${w.natural_week_start}（例会${w.meeting_date}）</option>`).join("");
@@ -229,14 +217,33 @@ export function mountTaskCreateSection(root, { allModules, allPeople, allWeeksRa
     previewEl.className = "recurring-instance-preview status";
   }
 
+  function updateAssigneeDisplay(show) {
+    const el = root.querySelector(".assignee-display");
+    if (!show) {
+      el.hidden = true;
+      return;
+    }
+    const mod = currentModule(allModules);
+    const per = currentPerson(allPeople);
+    if (!mod || !per) {
+      el.textContent = `⚠ 当前模块/当前责任人尚未在"设置"页面指定，无法新建任务`;
+      el.className = "assignee-display status error";
+    } else {
+      el.textContent = `将使用当前模块：${mod.name} ｜ 当前责任人：${per.name}（如需更换，去"设置"页面切换"当前"）`;
+      el.className = "assignee-display status";
+    }
+    el.hidden = false;
+  }
+
   async function onOwnerChange() {
     const sel = parseOwnerValue();
     const isTaskList = sel.type === "sequential" || sel.type === "nonsequential";
+    const isRecurringNew = sel.isNew && sel.type === "recurring";
     root.querySelector(".new-project-fields").hidden = !sel.isNew;
     root.querySelector(".new-project-title-wrap").hidden = sel.type === "recurring";
-    root.querySelector(".new-project-extra-wrap").hidden = sel.type === "recurring";
+    root.querySelector(".new-project-deadline-wrap").hidden = sel.type !== "nonsequential";
     root.querySelector(".leaf-fields").hidden = !isTaskList;
-    root.querySelector(".recurring-new-fields").hidden = !(sel.isNew && sel.type === "recurring");
+    root.querySelector(".recurring-new-fields").hidden = !isRecurringNew;
     root.querySelector(".recurring-instance-fields").hidden = !(sel.type === "recurring" && !sel.isNew);
     root.querySelector(".create-submit-btn").textContent = sel.type === "recurring" && !sel.isNew ? "生成下一个实例" : "新建";
 
@@ -245,26 +252,24 @@ export function mountTaskCreateSection(root, { allModules, allPeople, allWeeksRa
     }
     if (isTaskList) {
       refreshLevel2Options(sel);
-      root.querySelector(".leaf-module").innerHTML = moduleOptionsHtmlStrict(allModules, soleModuleId(allModules));
-      root.querySelector(".leaf-owner").innerHTML = peopleOptionsHtml(allPeople, solePersonName(allPeople));
-    }
-    if (sel.type === "recurring" && sel.isNew) {
-      root.querySelector(".recurring-module").innerHTML = moduleOptionsHtmlStrict(allModules, soleModuleId(allModules));
-      root.querySelector(".recurring-owner-select").innerHTML = peopleOptionsHtml(allPeople, solePersonName(allPeople));
     }
     if (sel.type === "recurring" && !sel.isNew) {
       refreshRecurringPreview(sel.id);
     }
+    updateAssigneeDisplay(isTaskList || isRecurringNew);
   }
   root.querySelector(".owner-select").addEventListener("change", onOwnerChange);
 
   async function createTaskListLeaf(sel) {
+    const mod = currentModule(allModules);
+    const per = currentPerson(allPeople);
+    if (!mod || !per) throw new Error(`请先在"设置"页面指定当前模块和当前责任人`);
     const title = root.querySelector(".leaf-title").value.trim();
     const deliverable = root.querySelector(".leaf-deliverable").value.trim();
     const completionDate = root.querySelector(".leaf-completion-date").value;
     const startDate = root.querySelector(".leaf-start-date").value;
-    const moduleId = root.querySelector(".leaf-module").value || null;
-    const owner = root.querySelector(".leaf-owner").value.trim();
+    const moduleId = mod.id;
+    const owner = per.name;
     const level2Select = root.querySelector(".wbs-level2-select");
     const isNewLevel2Group = level2Select.value === "__new__";
     const level2Title = root.querySelector(".wbs-level2-title").value.trim();
@@ -275,8 +280,8 @@ export function mountTaskCreateSection(root, { allModules, allPeople, allWeeksRa
       const level3raw = root.querySelector(".wbs-level3").value;
       level3 = level3raw ? Number(level3raw) : null;
     }
-    if (!title || !deliverable || !completionDate || !moduleId || !owner) {
-      throw new Error("任务标题/模块/责任人/最终目标交付物/最终计划完成时间都是必填项");
+    if (!title || !deliverable || !completionDate) {
+      throw new Error("任务标题/最终目标交付物/最终计划完成时间都是必填项");
     }
     if (isNewLevel2Group && level3 != null && !level2Title) {
       throw new Error("这个二级任务下有三级子任务，必须填写二级标题");
@@ -293,15 +298,11 @@ export function mountTaskCreateSection(root, { allModules, allPeople, allWeeksRa
           root.querySelector(".new-project-number").value = n;
         }
       );
-      const category = root.querySelector(".new-project-category").value.trim() || null;
-      const deadlineDate = root.querySelector(".new-project-deadline").value || null;
-      const projectDeliverable = root.querySelector(".new-project-deliverable").value.trim() || null;
+      const deadlineDate = sel.type === "nonsequential" ? root.querySelector(".new-project-deadline").value || null : null;
       const p = await createProject({
         title: projTitle,
         project_type: sel.type,
-        category,
         deadline_date: deadlineDate,
-        target_deliverable: projectDeliverable,
         level1_number: numberRow.level1_number,
       });
       projectId = p.id;
@@ -326,14 +327,17 @@ export function mountTaskCreateSection(root, { allModules, allPeople, allWeeksRa
   }
 
   async function createRecurringNew() {
+    const mod = currentModule(allModules);
+    const per = currentPerson(allPeople);
+    if (!mod || !per) throw new Error(`请先在"设置"页面指定当前模块和当前责任人`);
+    const moduleId = mod.id;
+    const owner = per.name;
     const titleVerb = root.querySelector(".recurring-title-verb").value.trim();
     const titleNoun = root.querySelector(".recurring-title-noun").value.trim();
     const firstWeekId = Number(root.querySelector(".recurring-first-week").value);
     const level1Number = Number(root.querySelector(".new-project-number").value);
-    const moduleId = root.querySelector(".recurring-module").value || null;
-    const owner = root.querySelector(".recurring-owner-select").value.trim();
-    if (!titleNoun || !firstWeekId || !moduleId || !owner) {
-      throw new Error("名词部分(交付物)/模块/责任人/第一次的例会周都是必填项");
+    if (!titleNoun || !firstWeekId) {
+      throw new Error("名词部分(交付物)/第一次的例会周都是必填项");
     }
     const title = titleVerb + titleNoun;
     const numberRow = await claimTaskNumberSafe(

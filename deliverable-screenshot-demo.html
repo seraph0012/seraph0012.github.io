@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>交付物截图 - 效果预览(测试数据)</title>
+  <style>
+    body { font-family: sans-serif; max-width: 760px; margin: 24px auto; padding: 0 16px; }
+    canvas { border: 1px solid #ccc; display: block; margin-top: 12px; }
+    ul { font-size: 13px; color: #555; line-height: 1.7; }
+    button { margin-top: 12px; padding: 6px 14px; }
+  </style>
+</head>
+<body>
+  <h1>交付物文件夹截图 — 效果预览</h1>
+  <p>这个页面不接数据库/不需要登录，纯粹用写死的测试数据验证 <code>shared/deliverableScreenshot.js</code> 画出来的效果。确认满意后再接入真实的"上周总结"数据（阶段二）。测试数据覆盖了以下场景：</p>
+  <ul>
+    <li>pptx / docx / xlsx / pdf / image / zip 六种常见文件类型各一条</li>
+    <li>一条 <code>folder</code>（文件夹）类型 —— 代表代码这类不止一个文件的交付物</li>
+    <li>一条交付物文字里写了两行 —— 应该拆成两条独立的文件</li>
+    <li>一条模拟"未完成但用时不为0"的部分交付物 —— 应该正常出现在截图里（不按任务完成状态过滤）</li>
+    <li>一条交付物文字是"无" —— 应该被排除，不出现在截图里</li>
+    <li>一条没选"交付物类型"（历史数据/用户没填）—— 应该退化成通用文件图标</li>
+  </ul>
+
+  <canvas id="demo-canvas"></canvas>
+  <button type="button" id="download-btn">下载PNG</button>
+
+  <script type="module">
+    import { buildDeliverableItemsFromEntries, renderDeliverableScreenshot } from "./shared/deliverableScreenshot.js";
+
+    // 模拟weekly_task_entries里appears_in='summary'的行，字段名跟真实db.js返回的一致，
+    // 方便阶段二直接把真实查询结果原样传进buildDeliverableItemsFromEntries()而不用改这个函数。
+    const testEntries = [
+      { deliverable_file_type: "pptx", deliverable_this_week: "季度采购分析报告.pptx" },
+      { deliverable_file_type: "docx", deliverable_this_week: "供应商评估方案说明.docx" },
+      { deliverable_file_type: "xlsx", deliverable_this_week: "预算测算表.xlsx" },
+      { deliverable_file_type: "pdf", deliverable_this_week: "验收报告.pdf" },
+      { deliverable_file_type: "image", deliverable_this_week: "系统架构图.png" },
+      { deliverable_file_type: "zip", deliverable_this_week: "部署包.zip" },
+      { deliverable_file_type: "folder", deliverable_this_week: "代码_采购模块重构" },
+      { deliverable_file_type: "docx", deliverable_this_week: "周报模板v1.docx\n附录说明.docx" },
+      { deliverable_file_type: "pptx", deliverable_this_week: "方案初稿(部分完成).pptx" }, // 未完成但用时不为0的场景
+      { deliverable_file_type: "pptx", deliverable_this_week: "无" }, // 用时为0，应被排除
+      { deliverable_file_type: "xlsx", deliverable_this_week: "" }, // 空文本，应被排除
+      { deliverable_file_type: "", deliverable_this_week: "未分类的杂项说明.rtf" }, // 没选类型，退化成通用图标
+    ];
+
+    const items = buildDeliverableItemsFromEntries(testEntries, "2026-07-20");
+    console.log(`共生成 ${items.length} 条截图项(测试数据12条entries，其中2条应被排除)`, items);
+
+    const canvas = document.getElementById("demo-canvas");
+    renderDeliverableScreenshot(canvas, items, { folderTitle: "交付物_2026-07-20" });
+
+    document.getElementById("download-btn").addEventListener("click", () => {
+      canvas.toBlob((blob) => {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = "交付物_demo.png";
+        a.click();
+        URL.revokeObjectURL(a.href);
+      }, "image/png");
+    });
+  </script>
+</body>
+</html>
