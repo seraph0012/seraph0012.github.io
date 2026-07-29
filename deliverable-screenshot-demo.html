@@ -22,7 +22,8 @@
     <li>一条没选"交付物类型"（历史数据/用户没填）—— 应该退化成中性的通用文件图标（不画色带）</li>
     <li>一条名字很长的文件 —— 验证画布宽度会撑开、超过上限时省略号截断是否正常</li>
   </ul>
-  <p>2026-07-29第二版反馈调整：去掉了标题栏/表头/修改日期列/类型列，只保留图标+文件名；图标从emoji改成手绘的"翻角页面+色带徽标"样式（folder类型是独立的文件夹形状）；背景统一白色，字体改成Windows常用的Segoe UI/微软雅黑。</p>
+  <p>2026-07-29第二版反馈调整：去掉了标题栏/修改日期列/类型列，只保留"名称"表头+图标+文件名；背景统一白色，字体改成Windows常用的Segoe UI/微软雅黑。</p>
+  <p>2026-07-29第三版反馈调整：手绘图标被指出"还不如上一版"，改成直接用这台机器上真实的WPS图标（从WPS安装目录的<code>wpsofficeicon.dll</code>现取，不是Microsoft Office的图标——这台机器.docx当前默认关联虽然是Word，但这里绕开了默认关联，直接读WPS自己注册的图标资源）；图片/文件夹/未选择类型用的是Windows系统自带图标。表头重新加回，只保留"名称"这一列。</p>
 
   <canvas id="demo-canvas"></canvas>
   <button type="button" id="download-btn">下载PNG</button>
@@ -52,7 +53,7 @@
     console.log(`共生成 ${items.length} 条截图项(测试数据13条entries，其中2条应被排除)`, items);
 
     const canvas = document.getElementById("demo-canvas");
-    renderDeliverableScreenshot(canvas, items);
+    await renderDeliverableScreenshot(canvas, items);
 
     document.getElementById("download-btn").addEventListener("click", () => {
       canvas.toBlob((blob) => {
