@@ -220,7 +220,14 @@ function findSlideDocByTitle(slideDocs, titleText) {
 // 抽出"查数据+拼rows"这部分，独立导出——generatePptForWeek()和网页预览(shared/tablePreview.js，
 // 由index.js调用)共用同一份数据+格式化逻辑，保证不会出现"预览显示对但实际导出的PPT错"或
 // 反过来的情况(2026-07-20新增，配合"预览PPT"功能)。
-export async function buildReportRows(targetWeek, previousWeek, allModules) {
+// 2026-07-31新增skipLiveDetail选项：已锁定的会话(见plan-unified-lock-compact-view.md的
+// 精简只读视图)不需要再查tasks/projects/task_groups这个昂贵的嵌套join——已锁定周该有的
+// detail字段全部已经在锁定那一刻冻结进了每一行自己的snapshot_*列。true时detailMap传空
+// Map(resolveDetail对没有snapshot_captured_at的行会退回detailMap.get()||{}，也就是全部
+// 留空——宁可留白也不为了兜底又发起一次实时查询)，frozen无条件为true(不看两个week自己的
+// 锁定字段，调用方已经确认这个会话是锁定状态才会传这个选项)。missingSnapshotCount统计
+// 有多少行缺快照，供页面提示用户去补一次历史快照回填。
+export async function buildReportRows(targetWeek, previousWeek, allModules, { skipLiveDetail = false } = {}) {
   const moduleNameById = new Map(allModules.map((m) => [m.id, m.name]));
 
   const [planEntries, summaryEntries, stoppedEntries] = await Promise.all([
@@ -229,13 +236,13 @@ export async function buildReportRows(targetWeek, previousWeek, allModules) {
     listWeeklyTaskEntries(targetWeek.id, "stopped"),
   ]);
 
-  const taskIds = [...planEntries, ...summaryEntries, ...stoppedEntries].map((e) => e.task_id);
-  const detailMap = await buildSourceDetailMap(taskIds);
+  const allEntries = [...planEntries, ...summaryEntries, ...stoppedEntries];
+  const detailMap = skipLiveDetail ? new Map() : await buildSourceDetailMap(allEntries.map((e) => e.task_id));
 
-  // 2026-07-31新增：已锁定的周读锁定那一刻冻结的快照，没锁定的周继续读上面的实时detailMap
-  // (现状不变)。STOPPED表跟随plan_locked_at(跟stoppedSection.js自己的isLocked()判断一致)。
-  const planFrozen = !!targetWeek.plan_locked_at;
-  const summaryFrozen = !!(previousWeek && previousWeek.summary_locked_at);
+  // 已锁定的周读锁定那一刻冻结的快照，没锁定的周继续读实时detailMap(现状不变)。STOPPED表
+  // 跟随plan_locked_at(跟stoppedSection.js自己的isLocked()判断一致)。
+  const planFrozen = skipLiveDetail || !!targetWeek.plan_locked_at;
+  const summaryFrozen = skipLiveDetail || !!(previousWeek && previousWeek.summary_locked_at);
 
   const planRows = buildPlanLikeRows(planEntries, detailMap, moduleNameById, { frozen: planFrozen });
   const summaryRows = buildSummaryRows(summaryEntries, detailMap, moduleNameById, { frozen: summaryFrozen });
@@ -243,6 +250,7 @@ export async function buildReportRows(targetWeek, previousWeek, allModules) {
     executionColumnMode: "status",
     frozen: planFrozen,
   });
+  const missingSnapshotCount = skipLiveDetail ? allEntries.filter((e) => !e.snapshot_captured_at).length : 0;
 
   const meetingDate = new Date(`${targetWeek.meeting_date}T00:00:00Z`);
   const meetingLine1 = `${meetingDate.getUTCMonth() + 1}月份第${targetWeek.week_index_in_month}周`;
@@ -258,14 +266,15 @@ export async function buildReportRows(targetWeek, previousWeek, allModules) {
     reviewKeyPointsText: previousWeek?.review_key_points || "",
     // "备注"同样来自previousWeek，见sql/0025
     reviewRemarksText: previousWeek?.review_remarks || "",
+    missingSnapshotCount,
   };
 }
 
 // targetWeek的计划 + previousWeek的总结，生成PPT。返回 {blob, filename, planCount, summaryCount,
 // stoppedCount}，调用方负责触发下载（不在这里直接下载，方便以后如果要加预览环节）。
-export async function generatePptForWeek(targetWeek, previousWeek, allModules) {
+export async function generatePptForWeek(targetWeek, previousWeek, allModules, { skipLiveDetail = false } = {}) {
   const { planRows, summaryRows, stoppedRows, meetingLine1, meetingLine2, reviewKeyPointsText, reviewRemarksText } =
-    await buildReportRows(targetWeek, previousWeek, allModules);
+    await buildReportRows(targetWeek, previousWeek, allModules, { skipLiveDetail });
 
   const templateBuf = await fetch(TEMPLATE_URL).then((r) => {
     if (!r.ok) throw new Error(`模板文件加载失败（${r.status}），检查 web/assets/weekly_report_template.pptx 是否存在`);

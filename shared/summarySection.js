@@ -16,7 +16,6 @@ import {
   SOURCE_STATUS_LABEL,
   listAllActiveCandidates,
   wbsNumber,
-  snapshotWeekDetail,
 } from "./taskLabels.js";
 import { validateSummaryEntry } from "./entryValidation.js";
 import { renderTaskPicker } from "./taskPicker.js";
@@ -43,16 +42,8 @@ const TEMPLATE = `
   <div class="summary-body">
     <div class="lock-bar inline-form">
       <button type="button" class="generate-skeleton-btn">复制上周计划生成总结</button>
-      <button type="button" class="lock-btn">锁定本周总结</button>
-      <button type="button" class="unlock-btn secondary" hidden>解锁编辑</button>
     </div>
     <p class="skeleton-result status"></p>
-    <p class="lock-status status"></p>
-    <form class="unlock-form inline-form" hidden>
-      <input type="text" class="unlock-note" placeholder="订正说明（本周总结已锁定，说明这次要改什么/为什么）" style="min-width:320px" required />
-      <button type="button" class="unlock-confirm-btn">确认订正</button>
-      <button type="button" class="unlock-cancel-btn secondary">取消</button>
-    </form>
 
     <div class="review-key-points-block">
       <h3>重点工作完成情况</h3>
@@ -174,34 +165,15 @@ export function mountSummarySection(root, { allModules, allPeople }) {
     ).join("");
   }
 
+  // 2026-07-31：锁定/解锁的UI+快照写入统一挪到index.js的页面级"锁定"控制(一次点击同时锁定
+  // 本周计划+上周总结，见plan-unified-lock-compact-view.md)——原来这里的.lock-btn/
+  // .unlock-btn/.unlock-form整块markup+事件监听(含快照写入)、以及renderLockUI()disable
+  // 重点工作/备注文本框那部分都删掉了：已锁定的周现在index.js会整个隐藏editable-view
+  // (这个区块所在的容器)，不需要再对区块内单个字段做disabled。isSummaryLocked()保留：
+  // 生成PPT时previousWeek.summary_locked_at仍然要读，且理论上不会再被这个文件内部
+  // 触发true(setWeek()以后只会在index.js确认未锁定时才被调用)，保留作为防御性兜底。
   function isSummaryLocked() {
     return !!week?.summary_locked_at;
-  }
-
-  function renderLockUI() {
-    const lockBtn = root.querySelector(".lock-btn");
-    const unlockBtn = root.querySelector(".unlock-btn");
-    const unlockForm = root.querySelector(".unlock-form");
-    const statusEl = root.querySelector(".lock-status");
-    unlockForm.hidden = true;
-    if (!week) return;
-
-    const locked = isSummaryLocked();
-    lockBtn.hidden = locked;
-    unlockBtn.hidden = !locked;
-
-    let text = locked
-      ? `🔒 本周总结已锁定（${new Date(week.summary_locked_at).toLocaleString()}），编辑前需先解锁（本页面显示任务最新信息；已导出的PPT保留锁定时的快照，不会跟着变）`
-      : "";
-    if (week.summary_amendment_note) {
-      text += `${text ? " ｜ " : ""}⚠ 曾被订正：${week.summary_amendment_note}`;
-    }
-    statusEl.textContent = text;
-    statusEl.className = locked ? "lock-status status warn" : "lock-status status";
-    root.querySelector(".review-key-points").disabled = locked;
-    root.querySelector(".review-key-points-save").disabled = locked;
-    root.querySelector(".review-remarks").disabled = locked;
-    root.querySelector(".review-remarks-save").disabled = locked;
   }
 
   async function saveReviewKeyPoints() {
@@ -244,59 +216,20 @@ export function mountSummarySection(root, { allModules, allPeople }) {
     });
   });
 
-  root.querySelector(".lock-btn").addEventListener("click", async () => {
-    // 锁定是最终确认动作，点它前先把表格里当前显示的值(不管点没点过"保存")落库一遍，
-    // 避免"改了字段但忘了点保存，一锁定这些改动就跟着旧数据被冲掉"——重点工作文本框
-    // 同理，2026-07-20新增，一并落库。saveAllSummaryRows()现在本身就会做完整的审核校验
-    // (entryValidation.js)，校验不过会throw，被下面的catch挡住，不需要再单独查一遍(旧的
-    // validateSummaryBeforeLock()已删除，那套字段级校验统一在saveAllSummaryRows()里做，
-    // 标红定位到具体输入框，比alert列文字更清楚)。
-    try {
-      await saveAllSummaryRows();
-      await saveReviewKeyPoints();
-      await saveReviewRemarks();
-    } catch {
-      return; // 保存失败，错误已经标红+显示在对应的status提示里，不要继续往下锁
-    }
-    // 2026-07-31新增：锁定那一刻把当前从tasks/projects/task_groups现算出来的任务标题/
-    // 最终目标交付物/最终计划完成时间/任务状态冻结进这一周每一行自己的snapshot_*列，
-    // 见plan-locked-week-ppt-snapshot.md。快照没完整写完就不设置summary_locked_at。
-    try {
-      await snapshotWeekDetail(week.id, "summary");
-    } catch (err) {
-      const resultEl = root.querySelector(".save-summary-result");
-      resultEl.textContent = `保存成功，但锁定失败（快照写入出错：${err.message}），请重试`;
-      resultEl.className = "save-summary-result status error";
-      return;
-    }
-    const updated = await updateMeetingWeekFields(week.id, { summary_locked_at: new Date().toISOString() });
-    Object.assign(week, updated);
-    renderLockUI();
-    await loadSummary();
-  });
-
-  root.querySelector(".unlock-btn").addEventListener("click", () => {
-    root.querySelector(".unlock-form").hidden = false;
-  });
-  root.querySelector(".unlock-cancel-btn").addEventListener("click", () => {
-    root.querySelector(".unlock-form").hidden = true;
-  });
-  root.querySelector(".unlock-confirm-btn").addEventListener("click", async () => {
-    const noteEl = root.querySelector(".unlock-note");
-    const note = noteEl.value.trim();
-    if (!note) {
-      alert("请填写订正说明");
-      return;
-    }
-    const updated = await updateMeetingWeekFields(week.id, {
-      summary_locked_at: null,
-      summary_amendment_note: note,
-    });
-    Object.assign(week, updated);
-    noteEl.value = "";
-    renderLockUI();
-    await loadSummary();
-  });
+  // 2026-07-31：供index.js页面级统一"锁定"按钮调用——把原来.lock-btn点击处理器里"落库"
+  // 那部分(saveAllSummaryRows+两个review字段的保存)抽出来，快照写入+真正设置
+  // summary_locked_at的部分交给index.js统一做(同时处理targetWeek的plan/stopped)。
+  // 这里必须判空：previousWeek可能是null(系统里最早一周，没有更早的周可总结)，这时候
+  // week也是null，saveReviewKeyPoints()/saveReviewRemarks()内部都是直接
+  // updateMeetingWeekFields(week.id,...)，不判空会崩——这是design review阶段发现的真实
+  // gap：原来的锁定按钮只在.summary-body可见(即week非空)时才可能被点到，现在从页面级
+  // 统一按钮触发，不再有这层隐式保护。
+  async function prepareForLock() {
+    if (!week) return;
+    await saveAllSummaryRows();
+    await saveReviewKeyPoints();
+    await saveReviewRemarks();
+  }
 
   async function generateSkeleton() {
     const resultEl = root.querySelector(".skeleton-result");
@@ -655,13 +588,13 @@ export function mountSummarySection(root, { allModules, allPeople }) {
     root.querySelector(".review-key-points-result").textContent = "";
     root.querySelector(".review-remarks").value = week.review_remarks ?? "";
     root.querySelector(".review-remarks-result").textContent = "";
-    renderLockUI();
     await loadSummary();
     await loadUnplannedCandidates();
   }
 
   // 2026-07-20新增：供shared/taskCreateSection.js"新建任务"表单创建成功后调用，让新任务
   // 立刻能在"记录计划外完成的任务"搜索到，不用用户自己点"刷新列表"。2026-07-31新增
-  // addUnplannedTask：供shared/stoppedSection.js"添加到上周总结"按钮调用。
-  return { setWeek, refreshUnplannedCandidates: loadUnplannedCandidates, addUnplannedTask };
+  // addUnplannedTask：供shared/stoppedSection.js"添加到上周总结"按钮调用；prepareForLock：
+  // 供index.js页面级统一锁定按钮调用。
+  return { setWeek, refreshUnplannedCandidates: loadUnplannedCandidates, addUnplannedTask, prepareForLock };
 }

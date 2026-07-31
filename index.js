@@ -1,6 +1,12 @@
 import { requireAuth } from "./shared/authGuard.js";
 import { renderNav } from "./shared/nav.js";
-import { listModules, listPeople, listMeetingWeeks, listWeeklyTaskEntries } from "./shared/db.js";
+import {
+  listModules,
+  listPeople,
+  listMeetingWeeks,
+  listWeeklyTaskEntries,
+  updateMeetingWeekFields,
+} from "./shared/db.js";
 import { mountSummarySection } from "./shared/summarySection.js";
 import { mountPlanSection } from "./shared/planSection.js";
 import { mountStoppedSection } from "./shared/stoppedSection.js";
@@ -9,6 +15,7 @@ import { generatePptForWeek, buildReportRows } from "./shared/pptGenerate.js";
 import { renderPreviewTables } from "./shared/tablePreview.js";
 import { cacheFirst } from "./shared/localCache.js";
 import { buildDeliverableItemsFromEntries, renderDeliverableScreenshot } from "./shared/deliverableScreenshot.js";
+import { snapshotWeekDetail } from "./shared/taskLabels.js";
 
 const session = await requireAuth();
 if (!session) {
@@ -44,6 +51,66 @@ let summaryCtrl = null;
 let planCtrl = null;
 let stoppedCtrl = null;
 
+// 2026-07-31：锁定判断只看targetWeek.plan_locked_at一个字段——跟用户确认过的简化，因为
+// 从这次改动上线之后，"锁定"统一是一次点击同时锁定targetWeek.plan_locked_at+
+// previousWeek.summary_locked_at，两者按设计总是同步的。唯一的例外是这次改动上线之前
+// 就已经存在的、可能只锁了其中一边的历史数据——已知风险且影响面很小，不额外做兼容代码，
+// 见plan-unified-lock-compact-view.md。
+function isLocked() {
+  return !!targetWeek?.plan_locked_at;
+}
+
+// 已锁定的周：精简只读视图，只需要读weekly_task_entries自己行上的snapshot_*快照字段，
+// 完全不用查tasks/projects/task_groups——这是这次改动的核心性能收益。
+async function renderLockedPreview() {
+  const resultEl = document.getElementById("locked-generate-result");
+  const warnEl = document.getElementById("locked-snapshot-warning");
+  resultEl.textContent = "加载中...";
+  resultEl.className = "status";
+  try {
+    const reportData = await buildReportRows(targetWeek, previousWeek, allModules, { skipLiveDetail: true });
+    renderPreviewTables(document.getElementById("locked-preview-root"), reportData);
+    resultEl.textContent = "";
+    if (reportData.missingSnapshotCount > 0) {
+      warnEl.textContent =
+        `有${reportData.missingSnapshotCount}条记录还没有生成过快照，显示可能不完整——去"设置"页面的` +
+        `诊断工具点一次"补齐已锁定历史周的快照"即可补上`;
+      warnEl.hidden = false;
+    } else {
+      warnEl.hidden = true;
+    }
+  } catch (err) {
+    resultEl.textContent = `加载失败：${err.message}`;
+    resultEl.className = "status error";
+  }
+}
+
+function renderLockControlUI() {
+  const lockBtn = document.getElementById("lock-btn");
+  const unlockBtn = document.getElementById("unlock-btn");
+  const unlockForm = document.getElementById("unlock-form");
+  const statusEl = document.getElementById("lock-status");
+  unlockForm.hidden = true;
+  if (!targetWeek) {
+    lockBtn.hidden = true;
+    unlockBtn.hidden = true;
+    statusEl.textContent = "";
+    return;
+  }
+  const locked = isLocked();
+  lockBtn.hidden = locked;
+  unlockBtn.hidden = !locked;
+  let text = locked
+    ? `🔒 本周已锁定（${new Date(targetWeek.plan_locked_at).toLocaleString()}），编辑前需先解锁`
+    : "";
+  const notes = [targetWeek.plan_amendment_note, previousWeek?.summary_amendment_note].filter(Boolean);
+  if (notes.length > 0) {
+    text += `${text ? " ｜ " : ""}⚠ 曾被订正：${notes.join("；")}`;
+  }
+  statusEl.textContent = text;
+  statusEl.className = locked ? "status warn" : "status";
+}
+
 // 切周期间把选择器disabled掉，防止用户在上一次切换的异步查询(loadSummary/loadSavedPlan等)
 // 还没返回时又快速切到另一个周——两次setWeek()的DOM写入会交错，后完成的那次(不一定是
 // 用户最后选的那个周)会把表格覆盖成它自己的数据，表现为"切换后不显示对应周的数据"/
@@ -55,6 +122,10 @@ let stoppedCtrl = null;
 // 怎么切换选择器都不会有任何反应(2026-07-13用户实测到的真实现象："只有刚刚打开页面的时候
 // 是禁用选择器的，后续切换周就没有任何效果了")。这里兜住异常，保证init()一定能往下走到
 // addEventListener，并把错误信息显示出来方便定位，而不是静默吞掉。
+//
+// 2026-07-31：按isLocked()分流——已锁定的周切换成精简只读视图(只读快照，不查tasks/
+// projects)，未锁定的周才走原来"三个controller各自setWeek()"的完整编辑路径，这是这次
+// 改动的核心：已锁定周不再触发summaryCtrl/planCtrl/stoppedCtrl内部那些昂贵查询。
 async function applyWeek(week) {
   const weekSelect = document.getElementById("week-select");
   const infoEl = document.getElementById("week-info");
@@ -63,18 +134,29 @@ async function applyWeek(week) {
     targetWeek = week;
     previousWeek = week ? findPreviousWeek(week) : null;
     renderWeekInfo();
-    await summaryCtrl.setWeek(previousWeek);
-    await planCtrl.setWeek(targetWeek, previousWeek);
-    await stoppedCtrl.setWeek(targetWeek, previousWeek);
-    // 切周之后预览区还留着上一个周的内容会造成误导，直接清空，用户要看新的周就重新点"预览"
-    document.getElementById("preview-root").innerHTML = "";
-    // 交付物截图同理——是previousWeek的数据，切周后原来那张图不再对应当前选的周，清空掉
-    // (canvas.width=0是清空画布内容最简单的写法，比getContext('2d').clearRect()更直接)。
-    const screenshotCanvas = document.getElementById("deliverable-screenshot-canvas");
-    screenshotCanvas.width = 0;
-    screenshotCanvas.height = 0;
-    document.getElementById("download-screenshot-btn").hidden = true;
-    document.getElementById("screenshot-result").textContent = "";
+    renderLockControlUI();
+    const lockedView = document.getElementById("locked-view");
+    const editableView = document.getElementById("editable-view");
+    if (targetWeek && isLocked()) {
+      editableView.hidden = true;
+      lockedView.hidden = false;
+      await renderLockedPreview();
+    } else {
+      lockedView.hidden = true;
+      editableView.hidden = false;
+      await summaryCtrl.setWeek(previousWeek);
+      await planCtrl.setWeek(targetWeek, previousWeek);
+      await stoppedCtrl.setWeek(targetWeek, previousWeek);
+      // 切周之后预览区还留着上一个周的内容会造成误导，直接清空，用户要看新的周就重新点"预览"
+      document.getElementById("preview-root").innerHTML = "";
+      // 交付物截图同理——是previousWeek的数据，切周后原来那张图不再对应当前选的周，清空掉
+      // (canvas.width=0是清空画布内容最简单的写法，比getContext('2d').clearRect()更直接)。
+      const screenshotCanvas = document.getElementById("deliverable-screenshot-canvas");
+      screenshotCanvas.width = 0;
+      screenshotCanvas.height = 0;
+      document.getElementById("download-screenshot-btn").hidden = true;
+      document.getElementById("screenshot-result").textContent = "";
+    }
   } catch (err) {
     console.error("[index] 切换目标周失败", err);
     infoEl.textContent = `切换周失败：${err.message}（详情见浏览器控制台F12）`;
@@ -83,6 +165,91 @@ async function applyWeek(week) {
     weekSelect.disabled = false;
   }
 }
+
+document.getElementById("lock-btn").addEventListener("click", async () => {
+  const statusEl = document.getElementById("lock-status");
+  if (!targetWeek) return;
+  // 锁定是最终确认动作，点它前先把①②区块表格里当前显示的值(不管点没点过"保存")落库
+  // 一遍——planCtrl.saveAll()/summaryCtrl.prepareForLock()内部都会先跑一遍完整的审核
+  // 校验(entryValidation.js)，校验不过会throw，错误已经在①②区块自己的结果提示里标红
+  // 显示(这一步还在未锁定/完整编辑视图，这两个区块仍然可见)，这里不用再单独提示。
+  try {
+    await planCtrl.saveAll();
+    await summaryCtrl.prepareForLock();
+  } catch {
+    return;
+  }
+  // 锁定那一刻把当前从tasks/projects/task_groups现算出来的任务标题/最终目标交付物/
+  // 最终计划完成时间/任务状态冻结进这一周每一行自己的snapshot_*列。快照没完整写完
+  // 就不设置plan_locked_at/summary_locked_at，保证"已锁定⇒已完整快照"这个不变式。
+  try {
+    await snapshotWeekDetail(targetWeek.id, "plan");
+    await snapshotWeekDetail(targetWeek.id, "stopped");
+    if (previousWeek) await snapshotWeekDetail(previousWeek.id, "summary");
+  } catch (err) {
+    statusEl.textContent = `锁定失败（快照写入出错：${err.message}），请重试`;
+    statusEl.className = "status error";
+    return;
+  }
+  const updatedTarget = await updateMeetingWeekFields(targetWeek.id, { plan_locked_at: new Date().toISOString() });
+  Object.assign(targetWeek, updatedTarget);
+  if (previousWeek) {
+    const updatedPrev = await updateMeetingWeekFields(previousWeek.id, { summary_locked_at: new Date().toISOString() });
+    Object.assign(previousWeek, updatedPrev);
+  }
+  await applyWeek(targetWeek);
+});
+
+document.getElementById("unlock-btn").addEventListener("click", () => {
+  document.getElementById("unlock-form").hidden = false;
+});
+document.getElementById("unlock-cancel-btn").addEventListener("click", () => {
+  document.getElementById("unlock-form").hidden = true;
+});
+document.getElementById("unlock-confirm-btn").addEventListener("click", async () => {
+  const noteEl = document.getElementById("unlock-note");
+  const note = noteEl.value.trim();
+  if (!note) {
+    alert("请填写订正说明");
+    return;
+  }
+  // 同一条订正说明文字同时写进targetWeek.plan_amendment_note和
+  // previousWeek.summary_amendment_note——跟锁定"一个动作管两边"对称，不分别问两次。
+  const updatedTarget = await updateMeetingWeekFields(targetWeek.id, {
+    plan_locked_at: null,
+    plan_amendment_note: note,
+  });
+  Object.assign(targetWeek, updatedTarget);
+  if (previousWeek) {
+    const updatedPrev = await updateMeetingWeekFields(previousWeek.id, {
+      summary_locked_at: null,
+      summary_amendment_note: note,
+    });
+    Object.assign(previousWeek, updatedPrev);
+  }
+  noteEl.value = "";
+  await applyWeek(targetWeek);
+});
+
+document.getElementById("locked-generate-btn").addEventListener("click", async () => {
+  const resultEl = document.getElementById("locked-generate-result");
+  if (!targetWeek) return;
+  resultEl.textContent = "生成中...";
+  resultEl.className = "status";
+  try {
+    const r = await generatePptForWeek(targetWeek, previousWeek, allModules, { skipLiveDetail: true });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(r.blob);
+    a.download = r.filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    resultEl.textContent = `已生成并下载 ${r.filename}`;
+    resultEl.className = "status ok";
+  } catch (err) {
+    resultEl.textContent = `失败：${err.message}`;
+    resultEl.className = "status error";
+  }
+});
 
 document.getElementById("preview-ppt-btn").addEventListener("click", async () => {
   const resultEl = document.getElementById("generate-result");

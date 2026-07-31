@@ -20,39 +20,62 @@
   </section>
 
   <section>
-    <div id="task-create-root"></div>
+    <div class="lock-bar inline-form">
+      <button type="button" id="lock-btn">锁定本周（计划+总结）</button>
+      <button type="button" id="unlock-btn" class="secondary" hidden>解锁编辑</button>
+    </div>
+    <p id="lock-status" class="status"></p>
+    <form id="unlock-form" class="inline-form" hidden>
+      <input type="text" id="unlock-note" placeholder="订正说明（说明这次要改什么/为什么）" style="min-width:320px" required />
+      <button type="button" id="unlock-confirm-btn">确认订正</button>
+      <button type="button" id="unlock-cancel-btn" class="secondary">取消</button>
+    </form>
   </section>
 
-  <section>
-    <h2>① 上周总结</h2>
-    <div id="summary-root"></div>
+  <section id="locked-view" hidden>
+    <h2>本周PPT</h2>
+    <button type="button" id="locked-generate-btn">生成并下载PPT</button>
+    <p id="locked-generate-result" class="status"></p>
+    <p id="locked-snapshot-warning" class="status warn" hidden></p>
+    <div id="locked-preview-root"></div>
   </section>
 
-  <section>
-    <h2>② 本周计划</h2>
-    <div id="plan-root"></div>
-  </section>
+  <div id="editable-view">
+    <section>
+      <div id="task-create-root"></div>
+    </section>
 
-  <section>
-    <h2>③ 未启动/中止工作</h2>
-    <div id="stopped-root"></div>
-  </section>
+    <section>
+      <h2>① 上周总结</h2>
+      <div id="summary-root"></div>
+    </section>
 
-  <section>
-    <h2>④ 生成PPT</h2>
-    <button type="button" id="preview-ppt-btn" class="secondary">预览</button>
-    <button type="button" id="generate-ppt-btn">生成并下载PPT</button>
-    <p id="generate-result" class="status"></p>
-    <div id="preview-root"></div>
-  </section>
+    <section>
+      <h2>② 本周计划</h2>
+      <div id="plan-root"></div>
+    </section>
 
-  <section>
-    <h2>⑤ 交付物文件夹截图</h2>
-    <button type="button" id="generate-screenshot-btn" class="secondary">生成截图</button>
-    <button type="button" id="download-screenshot-btn" hidden>下载PNG</button>
-    <p id="screenshot-result" class="status"></p>
-    <canvas id="deliverable-screenshot-canvas" style="max-width:100%; border:1px solid #ccc; display:block; margin-top:8px;"></canvas>
-  </section>
+    <section>
+      <h2>③ 未启动/中止工作</h2>
+      <div id="stopped-root"></div>
+    </section>
+
+    <section>
+      <h2>④ 生成PPT</h2>
+      <button type="button" id="preview-ppt-btn" class="secondary">预览</button>
+      <button type="button" id="generate-ppt-btn">生成并下载PPT</button>
+      <p id="generate-result" class="status"></p>
+      <div id="preview-root"></div>
+    </section>
+
+    <section>
+      <h2>⑤ 交付物文件夹截图</h2>
+      <button type="button" id="generate-screenshot-btn" class="secondary">生成截图</button>
+      <button type="button" id="download-screenshot-btn" hidden>下载PNG</button>
+      <p id="screenshot-result" class="status"></p>
+      <canvas id="deliverable-screenshot-canvas" style="max-width:100%; border:1px solid #ccc; display:block; margin-top:8px;"></canvas>
+    </section>
+  </div>
 
   <script type="module" src="./index.js"></script>
 </body>

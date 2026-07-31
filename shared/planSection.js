@@ -6,7 +6,6 @@ import {
   createWeeklyTaskEntry,
   updateWeeklyTaskEntry,
   deleteWeeklyTaskEntry,
-  updateMeetingWeekFields,
   updateTask,
 } from "./db.js";
 import {
@@ -15,7 +14,6 @@ import {
   listAllActiveCandidates,
   taskCandidateFields,
   wbsNumber,
-  snapshotWeekDetail,
 } from "./taskLabels.js";
 import { dateWithWeekday, weekdayLabel } from "./dateUtils.js";
 import { validatePlanEntry, planEntryWarning } from "./entryValidation.js";
@@ -89,17 +87,9 @@ function escapeHtml(s) {
 const TEMPLATE = `
   <div class="lock-bar inline-form">
     <button type="button" class="generate-candidates-btn">生成候选池</button>
-    <button type="button" class="lock-btn">锁定本周计划</button>
-    <button type="button" class="unlock-btn secondary" hidden>解锁编辑</button>
   </div>
   <p class="candidates-result status"></p>
   <p class="week-range-hint status"></p>
-  <p class="lock-status status"></p>
-  <form class="unlock-form inline-form" hidden>
-    <input type="text" class="unlock-note" placeholder="订正说明（本周计划已锁定，说明这次要改什么/为什么）" style="min-width:320px" required />
-    <button type="button" class="unlock-confirm-btn">确认订正</button>
-    <button type="button" class="unlock-cancel-btn secondary">取消</button>
-  </form>
 
   <div class="candidates-section" hidden>
     <h3>候选任务（勾选后加入计划）</h3>
@@ -296,88 +286,14 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     el.textContent = `本周工作日范围：${dateWithWeekday(week.meeting_date)} ~ ${dateWithWeekday(week.work_week_end)} —— 填"计划开始"/"执行截止"时不要选到这个范围之外（节假日）`;
   }
 
+  // 2026-07-31：锁定/解锁的UI+快照写入统一挪到index.js的页面级"锁定"控制(一次点击同时
+  // 锁定本周计划+上周总结，见plan-unified-lock-compact-view.md)——原来这里的.lock-btn/
+  // .unlock-btn/.unlock-form整块markup+事件监听(含快照写入)都删掉了。isPlanLocked()保留：
+  // 虽然按新设计setWeek()以后只会在确认未锁定时才被index.js调用，这个判断理论上不会再
+  // 命中true，但保留作为防御性兜底，不做这次改动范围外的额外清理。
   function isPlanLocked() {
     return !!week?.plan_locked_at;
   }
-
-  function renderLockUI() {
-    const lockBtn = root.querySelector(".lock-btn");
-    const unlockBtn = root.querySelector(".unlock-btn");
-    const unlockForm = root.querySelector(".unlock-form");
-    const statusEl = root.querySelector(".lock-status");
-    unlockForm.hidden = true;
-    if (!week) return;
-
-    const locked = isPlanLocked();
-    lockBtn.hidden = locked;
-    unlockBtn.hidden = !locked;
-
-    let text = locked
-      ? `🔒 本周计划已锁定（${new Date(week.plan_locked_at).toLocaleString()}），编辑前需先解锁（本页面显示任务最新信息；已导出的PPT保留锁定时的快照，不会跟着变）`
-      : "";
-    if (week.plan_amendment_note) {
-      text += `${text ? " ｜ " : ""}⚠ 曾被订正：${week.plan_amendment_note}`;
-    }
-    statusEl.textContent = text;
-    statusEl.className = locked ? "lock-status status warn" : "lock-status status";
-  }
-
-  root.querySelector(".lock-btn").addEventListener("click", async () => {
-    // 锁定本身就是"最终确认"动作，点它前先把表格里当前显示的值(不管点没点过"保存")
-    // 落库一遍，避免"改了字段但忘了点保存，一锁定这些改动就跟着旧数据被冲掉"这种情况——
-    // saveAllPlanRows()现在本身就会做完整的审核校验(entryValidation.js)，校验不过会
-    // throw，被这里的catch挡住，不需要再单独查一遍(旧的validatePlanBeforeLock()已删除，
-    // 那套字段级校验现在统一在saveAllPlanRows()里做，标红定位到具体输入框，比alert列文字
-    // 更清楚)。
-    try {
-      await saveAllPlanRows();
-    } catch {
-      return; // 保存失败，错误已经标红+显示在save-plan-result里，不要继续往下锁
-    }
-    // 2026-07-31新增：锁定那一刻把当前从tasks/projects/task_groups现算出来的任务标题/
-    // 最终目标交付物/最终计划完成时间/任务状态冻结进这一周每一行自己的snapshot_*列，
-    // 保证以后回头重新生成这一周(已锁定)的PPT，这几个字段不会再随任务后续改动而变化
-    // (见tools/.claude/plans/plan-locked-week-ppt-snapshot.md)。STOPPED表的锁定状态跟随
-    // plan_locked_at(stoppedSection.js没有自己的锁定按钮)，一并在这里冻结。快照没完整
-    // 写完就不设置plan_locked_at，保证"已锁定⇒已完整快照"这个不变式(重试即可，
-    // snapshotWeekDetail本身是幂等的)。
-    try {
-      await snapshotWeekDetail(week.id, "plan");
-      await snapshotWeekDetail(week.id, "stopped");
-    } catch (err) {
-      const resultEl = root.querySelector(".save-plan-result");
-      resultEl.textContent = `保存成功，但锁定失败（快照写入出错：${err.message}），请重试`;
-      resultEl.className = "save-plan-result status error";
-      return;
-    }
-    const updated = await updateMeetingWeekFields(week.id, { plan_locked_at: new Date().toISOString() });
-    Object.assign(week, updated);
-    renderLockUI();
-    await loadSavedPlan();
-  });
-
-  root.querySelector(".unlock-btn").addEventListener("click", () => {
-    root.querySelector(".unlock-form").hidden = false;
-  });
-  root.querySelector(".unlock-cancel-btn").addEventListener("click", () => {
-    root.querySelector(".unlock-form").hidden = true;
-  });
-  root.querySelector(".unlock-confirm-btn").addEventListener("click", async () => {
-    const noteEl = root.querySelector(".unlock-note");
-    const note = noteEl.value.trim();
-    if (!note) {
-      alert("请填写订正说明");
-      return;
-    }
-    const updated = await updateMeetingWeekFields(week.id, {
-      plan_locked_at: null,
-      plan_amendment_note: note,
-    });
-    Object.assign(week, updated);
-    noteEl.value = "";
-    renderLockUI();
-    await loadSavedPlan();
-  });
 
   function priorityOptionsHtml(selected) {
     return PRIORITY_OPTIONS.map(
@@ -814,7 +730,6 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     previousWeek = prevWeek;
     candidates = [];
     renderCandidates();
-    renderLockUI();
     renderWeekRangeHint();
     await Promise.all([loadSavedPlan(), loadManualCandidates()]);
   }
@@ -822,6 +737,13 @@ export function mountPlanSection(root, { allModules, allPeople }) {
   // 2026-07-20新增：供shared/taskCreateSection.js"新建任务"表单创建成功后调用，让新任务
   // 立刻能在"手动搜索添加任务"搜索到，不用用户自己点"刷新列表"。2026-07-31新增
   // addTaskManually：供shared/stoppedSection.js"添加到本周计划"按钮调用(候选对象直接传
-  // taskCandidateFields形状的candidate，跟这里手动搜索选中后拿到的形状完全一致)。
-  return { setWeek, refreshManualCandidates: loadManualCandidates, addTaskManually: addManualCandidate };
+  // taskCandidateFields形状的candidate，跟这里手动搜索选中后拿到的形状完全一致)。2026-07-31
+  // 晚些时候新增saveAll：供index.js页面级统一"锁定"按钮调用，锁定前先把这张表格当前显示的
+  // 值落库一遍(逻辑跟原来内嵌在这个文件自己.lock-btn处理器里的一样，只是调用方挪到了外面)。
+  return {
+    setWeek,
+    refreshManualCandidates: loadManualCandidates,
+    addTaskManually: addManualCandidate,
+    saveAll: saveAllPlanRows,
+  };
 }
