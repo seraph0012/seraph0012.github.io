@@ -343,6 +343,33 @@ export function mountSummarySection(root, { allModules, allPeople }) {
   }
   root.querySelector(".generate-skeleton-btn").addEventListener("click", generateSkeleton);
 
+  // 2026-07-31新增：记录每一行"加载/上次保存成功时"的字段原始值，供saveAllSummaryRows()
+  // 判断"这一行到底有没有真的被改动过"——见该函数内部注释，修复的是一个真实的数据损坏bug
+  // (持续多周的任务，只要任意一周的总结表格被保存，哪怕这一行完全没被动过，也会被强制
+  // 重新计算一次任务的最终完成状态，用这一周自己的数据覆盖掉可能是"更晚一周"已经正确算出
+  // 的"已完成"状态)。用WeakMap(键是tr元素本身)而不是按entryId存的Map，行被删除后自动
+  // 失效，不用额外清理。
+  const rowOriginals = new WeakMap();
+  function snapshotRowValues(tr) {
+    return {
+      deliverable_this_week: tr.querySelector(".f-deliverable").value,
+      deliverable_file_type: tr.querySelector(".f-deliverable-type").value,
+      status: tr.querySelector(".f-status").value,
+      actual_hours: tr.querySelector(".f-hours").value,
+      incomplete_reason: tr.querySelector(".f-reason").value,
+      rectification_measures: tr.querySelector(".f-rectify").value,
+      risk_level: tr.querySelector(".f-risk").value,
+      risk_note: tr.querySelector(".f-risk-note").value,
+      highlight: tr.querySelector(".f-highlight").checked,
+    };
+  }
+  function rowValuesChanged(tr) {
+    const original = rowOriginals.get(tr);
+    if (!original) return true; // 没记录过原始值(理论上不会发生，保险起见当作"改过"处理)
+    const current = snapshotRowValues(tr);
+    return Object.keys(current).some((k) => current[k] !== original[k]);
+  }
+
   // 抽成独立函数，供loadSummary()整表渲染和"记录计划外完成的任务"乐观本地追加行共用
   // (2026-07-14用户反馈：加入候选后不需要重新整个查一遍数据库，页面上已经有的信息直接
   // 拼出这一行就够了)
@@ -402,6 +429,7 @@ export function mountSummarySection(root, { allModules, allPeople }) {
     });
     tr.querySelector(".f-up").addEventListener("click", () => moveRow(tr, "up"));
     tr.querySelector(".f-down").addEventListener("click", () => moveRow(tr, "down"));
+    rowOriginals.set(tr, snapshotRowValues(tr)); // 记录这一行刚渲染出来时的字段值，供保存时判断"有没有真的被改过"
     return tr;
   }
 
@@ -474,8 +502,22 @@ export function mountSummarySection(root, { allModules, allPeople }) {
       }
     }
 
+    // 2026-07-31修复一个真实的数据损坏bug：持续多周的任务，只要任意一周的总结表格被
+    // "保存"，哪怕这一行完全没被改动过，也会走到下面的syncTaskStatus()、用这一周自己的
+    // 数据重新计算一次任务的最终完成状态——如果这个任务在"更晚一周"已经被正确判定"已完成"，
+    // 这一步会用"更早一周"(此刻还没到最终交付、isFinal天然是false)的数据把它覆盖回"未完成"。
+    // 用户实测到"持续2周的任务最终完成情况被莫名改回未完成"就是这个原因触发的——不是这次
+    // 新功能直接写坏的，是"保存"从来没区分过"这一行真的被改了"还是"只是恰好在同一张表格里"
+    // 这个早就存在的设计缺陷，被这次测试新流程时save了一张包含这类任务、但当时还没锁定的
+    // 历史周表格意外触发了。跳过没有真的被改动过的行——不写库、不调用syncTaskStatus，从根上
+    // 避免"点保存牵连同一张表格里其他没被动过的任务"。
+    let skippedUnchanged = 0;
     try {
       for (const tr of validRows) {
+        if (!rowValuesChanged(tr)) {
+          skippedUnchanged++;
+          continue;
+        }
         const entryId = Number(tr.dataset.entryId);
         const taskId = Number(tr.dataset.taskId);
         const targetDeliverable = tr.dataset.targetDeliverable || "";
@@ -493,6 +535,7 @@ export function mountSummarySection(root, { allModules, allPeople }) {
           risk_note: isIncomplete ? tr.querySelector(".f-risk-note").value || null : null,
           highlight: tr.querySelector(".f-highlight").checked,
         });
+        rowOriginals.set(tr, snapshotRowValues(tr)); // 写成功后更新"原始值"基准，避免下次保存又被当成"改过"重新处理一遍
         if (status) {
           // "已完成"不等于任务本身最终完成——本周交付材料要跟最终目标交付物文字严格相等
           // (去首尾空格)才算数，复杂任务允许跨周分批交付，见taskLabels.js的syncTaskStatus注释。
@@ -516,16 +559,17 @@ export function mountSummarySection(root, { allModules, allPeople }) {
       throw err;
     }
 
+    const skippedNote = skippedUnchanged > 0 ? `（其中${skippedUnchanged}条未改动，跳过写入）` : "";
     if (problemLines.length > 0) {
       resultEl.textContent =
         validRows.length === 0
           ? `保存失败，${problemLines.length}处未通过校验（已标红，鼠标悬停可看原因）：\n${problemLines.join("\n")}`
-          : `已保存${validRows.length}条，另有${problemLines.length}处未通过校验没有保存（已标红，鼠标悬停可看原因）：\n${problemLines.join("\n")}`;
+          : `已保存${validRows.length}条${skippedNote}，另有${problemLines.length}处未通过校验没有保存（已标红，鼠标悬停可看原因）：\n${problemLines.join("\n")}`;
       resultEl.className = "save-summary-result status error";
       throw new Error("部分行未通过校验");
     }
 
-    resultEl.textContent = `已保存 ${validRows.length} 条`;
+    resultEl.textContent = `已保存 ${validRows.length} 条${skippedNote}`;
     resultEl.className = "save-summary-result status ok";
   }
 
