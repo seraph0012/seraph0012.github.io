@@ -245,10 +245,18 @@ export function mountStoppedSection(root, { allModules, onAddToPlan, onAddToSumm
   });
 
   // 核心同步逻辑：查一遍全部任务里状态为"中止"的，跟本周已有的stopped条目做差集，把还没
-  // 出现的补进来。silent=true(setWeek()内部自动跑一遍时用)不弹锁定提示——不然每次切换到
-  // 一个已锁定的历史周都会跳出一条警告，很吵；用户主动点"刷新"按钮时(silent=false，默认)
-  // 才提示。只新增不删除——任务如果后来被手动改回非中止状态，这一行不会自动消失(避免
-  // "PPT显示过的历史记录被静默改掉"的意外)，需要手动点"删除"清理。
+  // 出现的补进来，同时把不再是"中止"的旧行清理掉。silent=true(setWeek()内部自动跑一遍时用)
+  // 不弹锁定提示——不然每次切换到一个已锁定的历史周都会跳出一条警告，很吵；用户主动点
+  // "刷新"按钮时(silent=false，默认)才提示。
+  // 2026-07-31：这里原来是"只新增不删除"(任务后来不再是中止状态时这一行不会自动消失，
+  // 需要手动点"删除"清理)——2026-07-20设计时的顾虑是"避免PPT显示过的历史记录被静默改掉"。
+  // 用户实测完"添加到上周总结"续做流程(见stoppedSection.js顶部注释之后新增的两个续做按钮)
+  // 后明确反馈：任务状态改成"已完成"保存成功后，这一行还留在中止列表里不符合预期，应该
+  // 自动消失。重新核对当初的顾虑——已经不成立了：`isLocked()`本来就会让整个同步函数直接
+  // 跳过(锁定的周不会被这里的增删触碰到)，真正需要保护"内容不再变化"的只有*已锁定*的周，
+  // 那部分现在由`snapshotWeekDetail`的锁定快照机制保护(见`taskLabels.js`)；未锁定的草稿周
+  // 本来就没有"内容已经定稿、不能再变"这层保证(跟这张表其它字段的编辑是同一个道理)，所以
+  // 清理不再是"中止"状态的旧行是安全的，改成"新增+清理"两件事一起做。
   async function syncStoppedTasks({ silent = false } = {}) {
     const resultEl = root.querySelector(".refresh-stopped-result");
     if (isLocked()) {
@@ -264,8 +272,10 @@ export function mountStoppedSection(root, { allModules, onAddToPlan, onAddToSumm
     }
     try {
       const [allStopped, currentEntries] = await Promise.all([listStoppedTasks(), listWeeklyTaskEntries(week.id, "stopped")]);
+      const stillStoppedTaskIds = new Set(allStopped.map((c) => c.task_id));
       const existing = new Set(currentEntries.map((e) => e.task_id));
       const toCreate = allStopped.filter((c) => !existing.has(c.task_id));
+      const toRemove = currentEntries.filter((e) => !stillStoppedTaskIds.has(e.task_id));
       for (const c of toCreate) {
         await createWeeklyTaskEntry({
           meeting_week_id: week.id,
@@ -277,11 +287,18 @@ export function mountStoppedSection(root, { allModules, onAddToPlan, onAddToSumm
           sort_order: ++currentMaxSortOrder,
         });
       }
-      if (!silent || toCreate.length > 0) {
-        resultEl.textContent = toCreate.length === 0 ? "没有新的中止任务" : `已加入 ${toCreate.length} 条`;
+      for (const e of toRemove) {
+        await deleteWeeklyTaskEntry(e.id);
+      }
+      const changed = toCreate.length > 0 || toRemove.length > 0;
+      if (!silent || changed) {
+        const parts = [];
+        if (toCreate.length > 0) parts.push(`新增 ${toCreate.length} 条`);
+        if (toRemove.length > 0) parts.push(`清理 ${toRemove.length} 条(任务状态已不再是中止)`);
+        resultEl.textContent = parts.length > 0 ? parts.join("，") : "没有变化";
         resultEl.className = "refresh-stopped-result status ok";
       }
-      if (toCreate.length > 0) await loadStoppedList();
+      if (changed) await loadStoppedList();
     } catch (err) {
       resultEl.textContent = `失败：${err.message}`;
       resultEl.className = "refresh-stopped-result status error";
