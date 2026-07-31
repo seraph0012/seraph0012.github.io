@@ -2,6 +2,9 @@ import { supabase } from "./shared/supabaseClient.js";
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./config.js";
 import { listMeetingWeeks } from "./shared/db.js";
 import { snapshotWeekDetail } from "./shared/taskLabels.js";
+import { renderNav } from "./shared/nav.js";
+
+renderNav();
 
 const configStatusEl = document.getElementById("config-status");
 const dbResultEl = document.getElementById("db-result");
