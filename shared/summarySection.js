@@ -16,6 +16,7 @@ import {
   SOURCE_STATUS_LABEL,
   listAllActiveCandidates,
   wbsNumber,
+  snapshotWeekDetail,
 } from "./taskLabels.js";
 import { validateSummaryEntry } from "./entryValidation.js";
 import { renderTaskPicker } from "./taskPicker.js";
@@ -190,7 +191,7 @@ export function mountSummarySection(root, { allModules, allPeople }) {
     unlockBtn.hidden = !locked;
 
     let text = locked
-      ? `🔒 本周总结已锁定（${new Date(week.summary_locked_at).toLocaleString()}），编辑前需先解锁`
+      ? `🔒 本周总结已锁定（${new Date(week.summary_locked_at).toLocaleString()}），编辑前需先解锁（本页面显示任务最新信息；已导出的PPT保留锁定时的快照，不会跟着变）`
       : "";
     if (week.summary_amendment_note) {
       text += `${text ? " ｜ " : ""}⚠ 曾被订正：${week.summary_amendment_note}`;
@@ -256,6 +257,17 @@ export function mountSummarySection(root, { allModules, allPeople }) {
       await saveReviewRemarks();
     } catch {
       return; // 保存失败，错误已经标红+显示在对应的status提示里，不要继续往下锁
+    }
+    // 2026-07-31新增：锁定那一刻把当前从tasks/projects/task_groups现算出来的任务标题/
+    // 最终目标交付物/最终计划完成时间/任务状态冻结进这一周每一行自己的snapshot_*列，
+    // 见plan-locked-week-ppt-snapshot.md。快照没完整写完就不设置summary_locked_at。
+    try {
+      await snapshotWeekDetail(week.id, "summary");
+    } catch (err) {
+      const resultEl = root.querySelector(".save-summary-result");
+      resultEl.textContent = `保存成功，但锁定失败（快照写入出错：${err.message}），请重试`;
+      resultEl.className = "save-summary-result status error";
+      return;
     }
     const updated = await updateMeetingWeekFields(week.id, { summary_locked_at: new Date().toISOString() });
     Object.assign(week, updated);
@@ -522,7 +534,7 @@ export function mountSummarySection(root, { allModules, allPeople }) {
   });
 
   function renderUnplannedPicker() {
-    renderTaskPicker(root.querySelector(".unplanned-picker"), unplannedCandidates, handleUnplannedPick);
+    renderTaskPicker(root.querySelector(".unplanned-picker"), unplannedCandidates, addUnplannedTask);
   }
 
   async function loadUnplannedCandidates() {
@@ -541,12 +553,16 @@ export function mountSummarySection(root, { allModules, allPeople }) {
     renderUnplannedPicker();
   }
 
-  async function handleUnplannedPick(c) {
+  // 2026-07-31：抽成独立命名函数并显式返回true/false(不是throw)——taskPicker.js的onPick
+  // 调用点没有await/catch，如果改成throw会在picker触发时产生未处理的promise rejection；
+  // stoppedSection.js"添加到上周总结"按钮(新增，见plan-locked-week-ppt-snapshot.md)需要
+  // 知道这次添加到底成不成功。
+  async function addUnplannedTask(c) {
     const resultEl = root.querySelector(".add-unplanned-result");
     if (isSummaryLocked()) {
       resultEl.textContent = "本周总结已锁定，请先解锁再添加";
       resultEl.className = "add-unplanned-result status warn";
-      return;
+      return false;
     }
     resultEl.textContent = "添加中...";
     resultEl.className = "add-unplanned-result status";
@@ -570,9 +586,11 @@ export function mountSummarySection(root, { allModules, allPeople }) {
       unplannedCandidates = unplannedCandidates.filter((x) => x.task_id !== c.task_id);
       renderUnplannedPicker();
       root.querySelector(".summary-tbody").appendChild(buildSummaryRowElement(entry, c.detail || {}, isSummaryLocked()));
+      return true;
     } catch (err) {
       resultEl.textContent = `失败：${err.message}`;
       resultEl.className = "add-unplanned-result status error";
+      return false;
     }
   }
 
@@ -599,6 +617,7 @@ export function mountSummarySection(root, { allModules, allPeople }) {
   }
 
   // 2026-07-20新增：供shared/taskCreateSection.js"新建任务"表单创建成功后调用，让新任务
-  // 立刻能在"记录计划外完成的任务"搜索到，不用用户自己点"刷新列表"。
-  return { setWeek, refreshUnplannedCandidates: loadUnplannedCandidates };
+  // 立刻能在"记录计划外完成的任务"搜索到，不用用户自己点"刷新列表"。2026-07-31新增
+  // addUnplannedTask：供shared/stoppedSection.js"添加到上周总结"按钮调用。
+  return { setWeek, refreshUnplannedCandidates: loadUnplannedCandidates, addUnplannedTask };
 }

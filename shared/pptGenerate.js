@@ -122,10 +122,10 @@ function mergedColHighlight(rows, highlights, cols, dependency = {}) {
 // 当前状态"未启动"/"中止"，从detail.sourceStatus读，跟"总体完成情况"列同一个数据来源)。
 // PLAN/STOPPED两张表结构完全一样，只有这一列取值方式不同，用可选参数复用同一份实现，
 // 避免维护两份几乎相同的拼行代码逐渐分叉。
-function buildPlanLikeRows(entries, detailMap, moduleNameById, { executionColumnMode = "date" } = {}) {
+function buildPlanLikeRows(entries, detailMap, moduleNameById, { executionColumnMode = "date", frozen = false } = {}) {
   const sorted = entries;
   const rows = sorted.map((e) => {
-    const detail = detailMap.get(e.task_id) || {};
+    const detail = resolveDetail(e, detailMap, frozen);
     return [
       moduleNameById.get(e.module_id) || "",
       e.plan_category || "",
@@ -156,10 +156,10 @@ function buildPlanLikeRows(entries, detailMap, moduleNameById, { executionColumn
   });
 }
 
-function buildSummaryRows(entries, detailMap, moduleNameById) {
+function buildSummaryRows(entries, detailMap, moduleNameById, { frozen = false } = {}) {
   const sorted = entries;
   const rows = sorted.map((e) => {
-    const detail = detailMap.get(e.task_id) || {};
+    const detail = resolveDetail(e, detailMap, frozen);
     return [
       moduleNameById.get(e.module_id) || "",
       e.summary_category || "",
@@ -191,6 +191,23 @@ function buildSummaryRows(entries, detailMap, moduleNameById) {
   });
 }
 
+// 2026-07-31新增：已锁定的周读"锁定那一刻"冻结进entry自己snapshot_*列的值，没锁定的周
+// (草稿中，或者locked但快照还没被一次性历史回填补上——见诊断页的回填按钮)继续读实时
+// detailMap，行为完全不变。见plan-locked-week-ppt-snapshot.md。
+function resolveDetail(entry, detailMap, frozen) {
+  if (frozen && entry.snapshot_captured_at) {
+    return {
+      level1Text: entry.snapshot_level1_text || "",
+      level2Text: entry.snapshot_level2_text || "",
+      level3Text: entry.snapshot_level3_text || "",
+      targetDeliverable: entry.snapshot_target_deliverable || "",
+      sourceStatus: entry.snapshot_source_status || "",
+      completionDate: entry.snapshot_completion_date,
+    };
+  }
+  return detailMap.get(entry.task_id) || {};
+}
+
 function findSlideDocByTitle(slideDocs, titleText) {
   for (const doc of slideDocs) {
     const texts = Array.from(doc.getElementsByTagNameNS("http://schemas.openxmlformats.org/drawingml/2006/main", "t"));
@@ -215,9 +232,17 @@ export async function buildReportRows(targetWeek, previousWeek, allModules) {
   const taskIds = [...planEntries, ...summaryEntries, ...stoppedEntries].map((e) => e.task_id);
   const detailMap = await buildSourceDetailMap(taskIds);
 
-  const planRows = buildPlanLikeRows(planEntries, detailMap, moduleNameById);
-  const summaryRows = buildSummaryRows(summaryEntries, detailMap, moduleNameById);
-  const stoppedRows = buildPlanLikeRows(stoppedEntries, detailMap, moduleNameById, { executionColumnMode: "status" });
+  // 2026-07-31新增：已锁定的周读锁定那一刻冻结的快照，没锁定的周继续读上面的实时detailMap
+  // (现状不变)。STOPPED表跟随plan_locked_at(跟stoppedSection.js自己的isLocked()判断一致)。
+  const planFrozen = !!targetWeek.plan_locked_at;
+  const summaryFrozen = !!(previousWeek && previousWeek.summary_locked_at);
+
+  const planRows = buildPlanLikeRows(planEntries, detailMap, moduleNameById, { frozen: planFrozen });
+  const summaryRows = buildSummaryRows(summaryEntries, detailMap, moduleNameById, { frozen: summaryFrozen });
+  const stoppedRows = buildPlanLikeRows(stoppedEntries, detailMap, moduleNameById, {
+    executionColumnMode: "status",
+    frozen: planFrozen,
+  });
 
   const meetingDate = new Date(`${targetWeek.meeting_date}T00:00:00Z`);
   const meetingLine1 = `${meetingDate.getUTCMonth() + 1}月份第${targetWeek.week_index_in_month}周`;

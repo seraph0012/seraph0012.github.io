@@ -3,7 +3,7 @@
 // 2026-07-14任务数据模型统一重构：原来queue_task/milestone/recurring_instance三种来源类型
 // 分散在三张表，这里对应有三套几乎重复的查询+拼接逻辑；统一成一张tasks表后收缩成单查询，
 // 不再需要sourceIdOf/sourceColumnFor/SOURCE_LABEL这类按source_type分发的工具函数。
-import { listTasksByIds, listProjects, updateTask } from "./db.js";
+import { listTasksByIds, listProjects, updateTask, listWeeklyTaskEntries, updateWeeklyTaskEntry } from "./db.js";
 
 export const PROJECT_TYPE_LABEL = {
   sequential: "顺序队列",
@@ -184,6 +184,35 @@ export async function listAllActiveCandidates(weekId) {
     c.detail = detailMap.get(c.task_id) || {};
   }
   return candidates;
+}
+
+// 2026-07-31新增：在"锁定"那一刻，把当前从tasks/projects/task_groups现算出来的detail字段
+// (标题/最终目标交付物/最终计划完成时间/任务当前状态)写死进这一周对应weekly_task_entries行
+// 自己的snapshot_*列——保证以后不管tasks表怎么变，回头重新生成这一周(已锁定)的PPT，这些
+// 字段都不再变化。只在"锁定"成功那一刻调用一次(planSection.js/summarySection.js的.lock-btn
+// 处理器)，不在草稿阶段的普通"保存"里调用；下面的一次性历史回填(diagnostics.js)复用同一份
+// 实现，不会有两份逻辑分叉。appearsIn: 'plan'|'summary'|'stopped'。幂等——重复调用只是用
+// 当前live状态覆盖写一遍，配合调用方"快照没写完就不设置*_locked_at"这条规则，即使
+// Promise.all部分失败也不会留下"锁定了但只有部分行有快照"的状态，重新点一次锁定即可自愈。
+export async function snapshotWeekDetail(weekId, appearsIn) {
+  const entries = await listWeeklyTaskEntries(weekId, appearsIn);
+  if (entries.length === 0) return;
+  const detailMap = await buildSourceDetailMap(entries.map((e) => e.task_id));
+  const capturedAt = new Date().toISOString();
+  await Promise.all(
+    entries.map((e) => {
+      const d = detailMap.get(e.task_id) || {};
+      return updateWeeklyTaskEntry(e.id, {
+        snapshot_level1_text: d.level1Text || "",
+        snapshot_level2_text: d.level2Text || "",
+        snapshot_level3_text: d.level3Text || "",
+        snapshot_target_deliverable: d.targetDeliverable || "",
+        snapshot_source_status: d.sourceStatus || "",
+        snapshot_completion_date: d.completionDate || null,
+        snapshot_captured_at: capturedAt,
+      });
+    })
+  );
 }
 
 // 拉出所有status='stopped'的任务(不分project_type，也不按周过滤)——shared/stoppedSection.js

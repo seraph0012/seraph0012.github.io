@@ -15,6 +15,7 @@ import {
   listAllActiveCandidates,
   taskCandidateFields,
   wbsNumber,
+  snapshotWeekDetail,
 } from "./taskLabels.js";
 import { dateWithWeekday, weekdayLabel } from "./dateUtils.js";
 import { validatePlanEntry, planEntryWarning } from "./entryValidation.js";
@@ -311,7 +312,9 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     lockBtn.hidden = locked;
     unlockBtn.hidden = !locked;
 
-    let text = locked ? `🔒 本周计划已锁定（${new Date(week.plan_locked_at).toLocaleString()}），编辑前需先解锁` : "";
+    let text = locked
+      ? `🔒 本周计划已锁定（${new Date(week.plan_locked_at).toLocaleString()}），编辑前需先解锁（本页面显示任务最新信息；已导出的PPT保留锁定时的快照，不会跟着变）`
+      : "";
     if (week.plan_amendment_note) {
       text += `${text ? " ｜ " : ""}⚠ 曾被订正：${week.plan_amendment_note}`;
     }
@@ -330,6 +333,22 @@ export function mountPlanSection(root, { allModules, allPeople }) {
       await saveAllPlanRows();
     } catch {
       return; // 保存失败，错误已经标红+显示在save-plan-result里，不要继续往下锁
+    }
+    // 2026-07-31新增：锁定那一刻把当前从tasks/projects/task_groups现算出来的任务标题/
+    // 最终目标交付物/最终计划完成时间/任务状态冻结进这一周每一行自己的snapshot_*列，
+    // 保证以后回头重新生成这一周(已锁定)的PPT，这几个字段不会再随任务后续改动而变化
+    // (见tools/.claude/plans/plan-locked-week-ppt-snapshot.md)。STOPPED表的锁定状态跟随
+    // plan_locked_at(stoppedSection.js没有自己的锁定按钮)，一并在这里冻结。快照没完整
+    // 写完就不设置plan_locked_at，保证"已锁定⇒已完整快照"这个不变式(重试即可，
+    // snapshotWeekDetail本身是幂等的)。
+    try {
+      await snapshotWeekDetail(week.id, "plan");
+      await snapshotWeekDetail(week.id, "stopped");
+    } catch (err) {
+      const resultEl = root.querySelector(".save-plan-result");
+      resultEl.textContent = `保存成功，但锁定失败（快照写入出错：${err.message}），请重试`;
+      resultEl.className = "save-plan-result status error";
+      return;
     }
     const updated = await updateMeetingWeekFields(week.id, { plan_locked_at: new Date().toISOString() });
     Object.assign(week, updated);
@@ -517,7 +536,7 @@ export function mountPlanSection(root, { allModules, allPeople }) {
   });
 
   function renderManualPicker() {
-    renderTaskPicker(root.querySelector(".manual-picker"), manualCandidates, handleManualPick);
+    renderTaskPicker(root.querySelector(".manual-picker"), manualCandidates, addManualCandidate);
   }
 
   async function loadManualCandidates() {
@@ -535,12 +554,16 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     renderManualPicker();
   }
 
-  async function handleManualPick(c) {
+  // 2026-07-31：抽成独立命名函数并显式返回true/false(不是throw)——taskPicker.js的onPick
+  // 调用点没有await/catch，如果改成throw会在picker触发时产生未处理的promise rejection；
+  // stoppedSection.js"添加到本周计划"按钮(新增，见plan-locked-week-ppt-snapshot.md)需要
+  // 知道这次添加到底成不成功才能决定按钮显示"已添加"还是报错，用返回值而不是异常更安全。
+  async function addManualCandidate(c) {
     const resultEl = root.querySelector(".manual-add-result");
     if (isPlanLocked()) {
       resultEl.textContent = "本周计划已锁定，请先解锁再添加";
       resultEl.className = "manual-add-result status warn";
-      return;
+      return false;
     }
     // B1：源头查重，同一个任务不能在本周计划里出现两次
     const alreadyInPlan = [...root.querySelectorAll(".plan-tbody tr[data-task-id]")].some(
@@ -549,7 +572,7 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     if (alreadyInPlan) {
       resultEl.textContent = "这个任务已经在本周计划里了，不能重复添加";
       resultEl.className = "manual-add-result status warn";
-      return;
+      return false;
     }
     resultEl.textContent = "添加中...";
     resultEl.className = "manual-add-result status";
@@ -590,9 +613,11 @@ export function mountPlanSection(root, { allModules, allPeople }) {
       manualCandidates = manualCandidates.filter((x) => x.task_id !== c.task_id);
       renderManualPicker();
       root.querySelector(".plan-tbody").appendChild(buildPlanRowElement(entry, c.detail || {}, isPlanLocked()));
+      return true;
     } catch (err) {
       resultEl.textContent = `失败：${err.message}`;
       resultEl.className = "manual-add-result status error";
+      return false;
     }
   }
 
@@ -795,6 +820,8 @@ export function mountPlanSection(root, { allModules, allPeople }) {
   }
 
   // 2026-07-20新增：供shared/taskCreateSection.js"新建任务"表单创建成功后调用，让新任务
-  // 立刻能在"手动搜索添加任务"搜索到，不用用户自己点"刷新列表"。
-  return { setWeek, refreshManualCandidates: loadManualCandidates };
+  // 立刻能在"手动搜索添加任务"搜索到，不用用户自己点"刷新列表"。2026-07-31新增
+  // addTaskManually：供shared/stoppedSection.js"添加到本周计划"按钮调用(候选对象直接传
+  // taskCandidateFields形状的candidate，跟这里手动搜索选中后拿到的形状完全一致)。
+  return { setWeek, refreshManualCandidates: loadManualCandidates, addTaskManually: addManualCandidate };
 }

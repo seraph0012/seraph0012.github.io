@@ -65,7 +65,7 @@ async function applyWeek(week) {
     renderWeekInfo();
     await summaryCtrl.setWeek(previousWeek);
     await planCtrl.setWeek(targetWeek, previousWeek);
-    await stoppedCtrl.setWeek(targetWeek);
+    await stoppedCtrl.setWeek(targetWeek, previousWeek);
     // 切周之后预览区还留着上一个周的内容会造成误导，直接清空，用户要看新的周就重新点"预览"
     document.getElementById("preview-root").innerHTML = "";
     // 交付物截图同理——是previousWeek的数据，切周后原来那张图不再对应当前选的周，清空掉
@@ -205,7 +205,13 @@ async function init() {
 
   summaryCtrl = mountSummarySection(document.getElementById("summary-root"), { allModules, allPeople: people });
   planCtrl = mountPlanSection(document.getElementById("plan-root"), { allModules, allPeople: people });
-  stoppedCtrl = mountStoppedSection(document.getElementById("stopped-root"), { allModules });
+  stoppedCtrl = mountStoppedSection(document.getElementById("stopped-root"), {
+    allModules,
+    // 2026-07-31新增："续做"两个按钮的实现直接复用②本周计划/①上周总结已有的
+    // addTaskManually/addUnplannedTask，不重新实现一份添加逻辑。
+    onAddToPlan: (c) => planCtrl.addTaskManually(c),
+    onAddToSummary: (c) => summaryCtrl.addUnplannedTask(c),
+  });
   // "新建任务"完整版功能——展开后才会真正查数据(见taskCreateSection.js内部懒加载)，这里
   // 挂载不额外增加首屏等待。onCreated让新任务立刻能在计划/总结的"手动搜索/添加"里搜到，
   // 不用用户自己点各自的"刷新列表"（未启动/中止表格不需要这个回调——新建的任务不会一
