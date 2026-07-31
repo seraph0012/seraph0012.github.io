@@ -731,6 +731,14 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     candidates = [];
     renderCandidates();
     renderWeekRangeHint();
+    // 2026-07-31用户反馈：保存成功/失败这类反馈文字只是临时提示，切周之后应该跟着消失，
+    // 不该一直留在页面上误导下一个周的操作。这几个是本文件里"点了按钮才会填内容"的结果
+    // 提示——不是像.week-range-hint那样每次setWeek()都会重新算出正确值的常驻信息。
+    for (const cls of [".candidates-result", ".add-result", ".manual-add-result", ".save-plan-result"]) {
+      const el = root.querySelector(cls);
+      el.textContent = "";
+      el.className = `${cls.slice(1)} status`;
+    }
     await Promise.all([loadSavedPlan(), loadManualCandidates()]);
   }
 

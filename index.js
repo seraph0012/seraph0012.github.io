@@ -91,6 +91,8 @@ function renderLockControlUI() {
   const unlockForm = document.getElementById("unlock-form");
   const statusEl = document.getElementById("lock-status");
   unlockForm.hidden = true;
+  document.getElementById("unlock-note").value = ""; // 避免上一个周没提交的订正说明草稿被带到另一个周
+
   if (!targetWeek) {
     lockBtn.hidden = true;
     unlockBtn.hidden = true;
@@ -135,6 +137,16 @@ async function applyWeek(week) {
     previousWeek = week ? findPreviousWeek(week) : null;
     renderWeekInfo();
     renderLockControlUI();
+    // 2026-07-31用户反馈：保存成功/失败这类反馈文字只是临时提示，切周之后应该跟着消失——
+    // 这两个是index.js自己拥有的状态提示(不属于summaryCtrl/planCtrl/stoppedCtrl任何一个
+    // 子模块，那几个各自在自己的setWeek()里清理自己的提示)，"精简视图"分支里的
+    // locked-generate-result会被renderLockedPreview()重新赋值，这里先清空避免短暂闪烁
+    // 上一个周的旧文字；"完整编辑视图"分支的generate-result不会被自动重新赋值(要等用户
+    // 点"预览"/"生成"才会更新)，必须在这里主动清空。
+    document.getElementById("generate-result").textContent = "";
+    document.getElementById("generate-result").className = "status";
+    document.getElementById("locked-generate-result").textContent = "";
+    document.getElementById("locked-generate-result").className = "status";
     const lockedView = document.getElementById("locked-view");
     const editableView = document.getElementById("editable-view");
     if (targetWeek && isLocked()) {

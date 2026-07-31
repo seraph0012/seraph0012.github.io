@@ -310,7 +310,15 @@ export function mountStoppedSection(root, { allModules, onAddToPlan, onAddToSumm
     week = w;
     previousWeek = prevWeek;
     renderLockHint();
-    root.querySelector(".stopped-action-result").textContent = "";
+    // 2026-07-31用户反馈：保存/刷新/续做这几个反馈文字只是临时提示，切周之后应该跟着消失。
+    // 注意.refresh-stopped-result不能只靠下面的syncStoppedTasks({silent:true})顺带清掉——
+    // silent模式下"没有变化"时它根本不会写任何文字，如果不在这里先清空，上一个周留下的
+    // 旧提示会一直显示到这个周真的发生变化为止，跟用户反馈的现象完全对应。
+    for (const cls of [".stopped-action-result", ".save-stopped-result", ".refresh-stopped-result"]) {
+      const el = root.querySelector(cls);
+      el.textContent = "";
+      el.className = `${cls.slice(1)} status`;
+    }
     await loadStoppedList();
     await syncStoppedTasks({ silent: true });
   }

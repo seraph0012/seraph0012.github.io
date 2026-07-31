@@ -588,6 +588,12 @@ export function mountSummarySection(root, { allModules, allPeople }) {
     root.querySelector(".review-key-points-result").textContent = "";
     root.querySelector(".review-remarks").value = week.review_remarks ?? "";
     root.querySelector(".review-remarks-result").textContent = "";
+    // 2026-07-31用户反馈：保存成功/失败这类反馈文字只是临时提示，切周之后应该跟着消失。
+    for (const cls of [".skeleton-result", ".add-unplanned-result", ".save-summary-result"]) {
+      const el = root.querySelector(cls);
+      el.textContent = "";
+      el.className = `${cls.slice(1)} status`;
+    }
     await loadSummary();
     await loadUnplannedCandidates();
   }
