@@ -202,12 +202,29 @@ export async function snapshotWeekDetail(weekId, appearsIn) {
   await Promise.all(
     entries.map((e) => {
       const d = detailMap.get(e.task_id) || {};
+      // 2026-07-31修复：snapshot_source_status原来直接抄tasks.status(这个任务当前唯一的、
+      // 全局共享的状态)——对一个跨多周交付的任务，不管快照哪一周，抄到的都是同一个"当前"值，
+      // 导致明明上上周当时还没做完、快照却也显示成了跟上周一样的"已完成"(用户实测发现的
+      // 真实bug)。总结条目自己就有"这一周的完成情况(e.status)+这一周的交付物文字"，能按跟
+      // syncTaskStatus完全同一套isFinal规则现算出"这一周本来应该是什么最终完成状态"，
+      // 不依赖那个全局共享字段——每一周各自算各自的，历史周不会再被"当前状态"污染。
+      // plan/stopped没有这个"每周自己的完成情况"概念，继续沿用live的tasks.status(现状不变)。
+      let sourceStatus = d.sourceStatus || "";
+      if (appearsIn === "summary" && e.status) {
+        const isFinal = !!(
+          d.targetDeliverable &&
+          e.deliverable_this_week &&
+          e.deliverable_this_week.trim() === d.targetDeliverable.trim()
+        );
+        const computed = computeSyncedTaskStatus(e.status, { isFinal });
+        if (computed) sourceStatus = SOURCE_STATUS_LABEL[computed] ?? computed;
+      }
       return updateWeeklyTaskEntry(e.id, {
         snapshot_level1_text: d.level1Text || "",
         snapshot_level2_text: d.level2Text || "",
         snapshot_level3_text: d.level3Text || "",
         snapshot_target_deliverable: d.targetDeliverable || "",
-        snapshot_source_status: d.sourceStatus || "",
+        snapshot_source_status: sourceStatus,
         snapshot_completion_date: d.completionDate || null,
         snapshot_captured_at: capturedAt,
       });
