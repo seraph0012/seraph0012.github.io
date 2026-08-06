@@ -11,6 +11,7 @@ import {
 import {
   PROJECT_TYPE_LABEL,
   buildSourceDetailMap,
+  buildLabelMap,
   listAllActiveCandidates,
   taskCandidateFields,
   wbsNumber,
@@ -194,6 +195,39 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     return sorted.find((t) => t.status !== "done" && t.status !== "stopped");
   }
 
+  // 2026-08-06新增：从generateCandidatePool()的候选池构建逻辑里抽出来，供
+  // checkUnscheduledIncomplete()复用同一套"这周该不该出现"的判断（顺序队列只算当前
+  // 一个任务/截止日期只算真正到期的/循环任务只算本周实例），不再像之前那样直接用
+  // listAllActiveCandidates()的全量未完成任务列表——那份列表故意不做日期过滤（服务于
+  // "手动搜索添加任务"这种任何时候都该搜得到的场景），但"未续排"提醒如果也用它，批量
+  // 导入的后续任务(sequential项目里排在后面还没轮到的、nonsequential项目里还没到期的)
+  // 会被一起算成"未安排"，越导入越多、提醒变得没有意义。
+  function buildDueRawCandidates(w, projects) {
+    const raw = [];
+    const weekEnd = new Date(w.natural_week_end);
+    for (const p of projects) {
+      if (p.project_type === "sequential") {
+        if (p.status !== "active") continue;
+        const task = currentSequentialTask(p);
+        if (!task) continue;
+        raw.push(taskCandidateFields(p, task));
+      } else if (p.project_type === "nonsequential") {
+        if (p.status !== "active") continue;
+        for (const t of p.tasks) {
+          if (t.status === "done" || t.status === "stopped") continue;
+          if (t.planned_completion_date && new Date(t.planned_completion_date) > weekEnd) continue;
+          raw.push(taskCandidateFields(p, t));
+        }
+      } else {
+        for (const t of p.tasks) {
+          if (t.meeting_week_id !== w.id) continue;
+          raw.push(taskCandidateFields(p, t));
+        }
+      }
+    }
+    return raw;
+  }
+
   async function computeCarryOverSet(prevWeek) {
     if (!prevWeek) return new Set();
     const prevSummary = await listWeeklyTaskEntries(prevWeek.id, "summary");
@@ -224,29 +258,7 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     const alreadyPlanned = new Set(existingPlan.map((e) => e.task_id));
     const carryOver = await computeCarryOverSet(previousWeek);
 
-    const raw = [];
-    const weekEnd = new Date(w.natural_week_end);
-
-    for (const p of projects) {
-      if (p.project_type === "sequential") {
-        if (p.status !== "active") continue;
-        const task = currentSequentialTask(p);
-        if (!task) continue;
-        raw.push(taskCandidateFields(p, task));
-      } else if (p.project_type === "nonsequential") {
-        if (p.status !== "active") continue;
-        for (const t of p.tasks) {
-          if (t.status === "done" || t.status === "stopped") continue;
-          if (t.planned_completion_date && new Date(t.planned_completion_date) > weekEnd) continue;
-          raw.push(taskCandidateFields(p, t));
-        }
-      } else {
-        for (const t of p.tasks) {
-          if (t.meeting_week_id !== w.id) continue;
-          raw.push(taskCandidateFields(p, t));
-        }
-      }
-    }
+    const raw = buildDueRawCandidates(w, projects);
 
     const filtered = raw.filter((c) => !alreadyPlanned.has(c.task_id));
     const detailMap = await buildSourceDetailMap(filtered.map((c) => c.task_id));
@@ -613,17 +625,26 @@ export function mountPlanSection(root, { allModules, allPeople }) {
     currentMaxSortOrder = entries.reduce((m, e) => Math.max(m, e.sort_order ?? 0), 0);
   }
 
-  // 保存成功后额外查一遍："总体未完成"的任务里有哪些本周计划完全没安排——不阻断保存，
-  // 只是提示(呈现方式已跟用户确认，见plan-audit-rules-v1.md第四部分)。listAllActiveCandidates()
-  // 已经排除了done/stopped的任务，返回的都是"总体未完成"的，直接跟本周计划里已有的
-  // task_id做差集即可，不需要额外按sourceStatus过滤。
+  // 保存成功后额外查一遍：这周"该出现"的候选任务(跟generateCandidatePool()同一套
+  // 顺序队列当前任务/截止日期真正到期/循环任务本周实例的判断)里，有哪些本周计划完全
+  // 没安排——不阻断保存，只是提示(呈现方式已跟用户确认，见plan-audit-rules-v1.md第四
+  // 部分)。2026-08-06修复：原来直接用listAllActiveCandidates()的全量未完成任务列表，
+  // 那份列表故意不做日期过滤(服务于"手动搜索添加任务"场景)，用户批量导入了一批
+  // sequential项目的后续任务(还没轮到、暂时不可能安排)后，这些任务全部被当成"未安排"
+  // 挂进提醒，越导入越多，提醒变得没有意义——改成只对"这周真的该出现"的候选做差集。
   async function checkUnscheduledIncomplete() {
-    const [all, planEntries] = await Promise.all([
-      listAllActiveCandidates(week.id),
+    const [projects, planEntries] = await Promise.all([
+      listProjects(),
       listWeeklyTaskEntries(week.id, "plan"),
     ]);
     const planned = new Set(planEntries.map((e) => e.task_id));
-    return all.filter((c) => !planned.has(c.task_id));
+    const missing = buildDueRawCandidates(week, projects).filter((c) => !planned.has(c.task_id));
+    if (missing.length === 0) return missing;
+    const labelMap = await buildLabelMap(missing.map((c) => c.task_id));
+    for (const c of missing) {
+      c.label = `${PROJECT_TYPE_LABEL[c.project_type]} ${labelMap.get(c.task_id) || "(未知任务)"}`;
+    }
+    return missing;
   }
 
   // 遍历当前表格里所有行，把显示的值一次性批量提交——不逐字段自动保存，改成"填完点保存"
