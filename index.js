@@ -269,6 +269,12 @@ document.getElementById("preview-ppt-btn").addEventListener("click", async () =>
   resultEl.textContent = "生成预览中...";
   resultEl.className = "status";
   try {
+    // 2026-08-06修复真实bug：用户反馈第一次下载的PPT里"重点工作完成情况"是空的，重新打开
+    // 页面再下载一次就有了——根因是"重点工作"/"备注"文本框各自有独立的"保存"按钮，跟下面
+    // "总结条目"表格的保存是两回事，用户以为点了表格的"保存"就万事俱全，实际这两个文本框
+    // 没被保存，buildReportRows读的是previousWeek.review_key_points这个内存里的旧值。
+    // 预览/生成前先flush这两个字段，不依赖用户记得点对那个小"保存"按钮。
+    await summaryCtrl.flushReviewFields();
     const reportData = await buildReportRows(targetWeek, previousWeek, allModules);
     renderPreviewTables(document.getElementById("preview-root"), reportData);
     resultEl.textContent = "预览已生成（见下方，非精确还原，仅供核对内容）";
@@ -285,6 +291,8 @@ document.getElementById("generate-ppt-btn").addEventListener("click", async () =
   resultEl.textContent = "生成中...";
   resultEl.className = "status";
   try {
+    // 同上"预览"按钮：生成前先flush"重点工作"/"备注"这两个容易被漏点保存的独立字段。
+    await summaryCtrl.flushReviewFields();
     const r = await generatePptForWeek(targetWeek, previousWeek, allModules);
     const a = document.createElement("a");
     a.href = URL.createObjectURL(r.blob);

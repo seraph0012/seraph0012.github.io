@@ -48,14 +48,14 @@ const TEMPLATE = `
     <div class="review-key-points-block">
       <h3>重点工作完成情况</h3>
       <textarea class="review-key-points" rows="4" placeholder="从工作群例会纪要粘贴，如：&#10;1）重点工作1：未完成。已部分完成xxx，还有yyy未完成。&#10;2）重点工作2：已完成。"></textarea>
-      <button type="button" class="review-key-points-save">保存</button>
+      <button type="button" class="review-key-points-save">保存重点工作（跟下面"总结条目"的保存是分开的，两处都要点）</button>
       <p class="review-key-points-result status"></p>
     </div>
 
     <div class="review-remarks-block">
       <h3>备注</h3>
       <textarea class="review-remarks" rows="3" placeholder="对之前计划有改动等需要说明的情况，不是每次都要填"></textarea>
-      <button type="button" class="review-remarks-save">保存</button>
+      <button type="button" class="review-remarks-save">保存备注（跟下面"总结条目"的保存是分开的，两处都要点）</button>
       <p class="review-remarks-result status"></p>
     </div>
 
@@ -229,6 +229,30 @@ export function mountSummarySection(root, { allModules, allPeople }) {
     await saveAllSummaryRows();
     await saveReviewKeyPoints();
     await saveReviewRemarks();
+  }
+
+  // 2026-08-06新增：真实bug复现——"重点工作完成情况"/"备注"是各自独立的文本框+"保存"按钮，
+  // 跟下面"总结条目"表格的"保存"完全是两回事(填完点保存的表格行保存不会连带保存这两个
+  // 字段)。用户反馈：粘贴了重点工作内容，以为页面上点了"保存"就万事俱全，实际点的是表格
+  // 那个"保存"，这两个文本框自己的小"保存"按钮没点到——生成的PPT里"重点工作完成情况"
+  // 一栏是空的，重新打开页面把这两个字段重新点一次保存后再生成才正常。生成PPT/预览前调用
+  // 这个函数兜底：如果文本框当前内容跟week上次记的值不一致(说明有未保存的改动)，静默补一次
+  // 保存——这两个字段是自由文本、没有校验规则，静默保存不会有"数据不完整还是被保存了"这类
+  // 副作用，不会像总结条目表格那样可能因为某行没通过校验而卡住。内容没变化时不发多余请求。
+  async function flushReviewFields() {
+    if (!week) return;
+    const keyPointsEl = root.querySelector(".review-key-points");
+    const remarksEl = root.querySelector(".review-remarks");
+    const patch = {};
+    if (keyPointsEl && keyPointsEl.value !== (week.review_key_points ?? "")) {
+      patch.review_key_points = keyPointsEl.value || null;
+    }
+    if (remarksEl && remarksEl.value !== (week.review_remarks ?? "")) {
+      patch.review_remarks = remarksEl.value || null;
+    }
+    if (Object.keys(patch).length === 0) return;
+    const updated = await updateMeetingWeekFields(week.id, patch);
+    Object.assign(week, updated);
   }
 
   async function generateSkeleton() {
@@ -601,6 +625,13 @@ export function mountSummarySection(root, { allModules, allPeople }) {
   // 2026-07-20新增：供shared/taskCreateSection.js"新建任务"表单创建成功后调用，让新任务
   // 立刻能在"记录计划外完成的任务"搜索到，不用用户自己点"刷新列表"。2026-07-31新增
   // addUnplannedTask：供shared/stoppedSection.js"添加到上周总结"按钮调用；prepareForLock：
-  // 供index.js页面级统一锁定按钮调用。
-  return { setWeek, refreshUnplannedCandidates: loadUnplannedCandidates, addUnplannedTask, prepareForLock };
+  // 供index.js页面级统一锁定按钮调用。2026-08-06新增flushReviewFields：供index.js"预览"/
+  // "生成并下载PPT"按钮调用，见函数定义处注释。
+  return {
+    setWeek,
+    refreshUnplannedCandidates: loadUnplannedCandidates,
+    addUnplannedTask,
+    prepareForLock,
+    flushReviewFields,
+  };
 }
