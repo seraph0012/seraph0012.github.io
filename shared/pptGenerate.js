@@ -270,11 +270,14 @@ export async function buildReportRows(targetWeek, previousWeek, allModules, { sk
   };
 }
 
-// targetWeek的计划 + previousWeek的总结，生成PPT。返回 {blob, filename, planCount, summaryCount,
-// stoppedCount}，调用方负责触发下载（不在这里直接下载，方便以后如果要加预览环节）。
-export async function generatePptForWeek(targetWeek, previousWeek, allModules, { skipLiveDetail = false } = {}) {
+// 2026-08-06新增：把"用reportData(buildReportRows()的返回值)实际拼出pptx文件"这部分从
+// generatePptForWeek()里拆出来单独导出——用户反馈的使用习惯是"下载之前一定先预览"，为了
+// 保证"下载到的PPT"和"预览看到的内容"是完全同一份数据（而不是各自独立重新查一次，中间
+// 可能有细微不一致），index.js改成"下载"按钮直接复用上一次点"预览"时已经拿到的reportData，
+// 不再重新调用buildReportRows()。targetWeek只用来算文件名(meeting_date)，不参与内容拼装。
+export async function buildPptFromReportData(reportData, targetWeek) {
   const { planRows, summaryRows, stoppedRows, meetingLine1, meetingLine2, reviewKeyPointsText, reviewRemarksText } =
-    await buildReportRows(targetWeek, previousWeek, allModules, { skipLiveDetail });
+    reportData;
 
   const templateBuf = await fetch(TEMPLATE_URL).then((r) => {
     if (!r.ok) throw new Error(`模板文件加载失败（${r.status}），检查 web/assets/weekly_report_template.pptx 是否存在`);
@@ -334,4 +337,14 @@ export async function generatePptForWeek(targetWeek, previousWeek, allModules, {
     summaryCount: summaryRows.length,
     stoppedCount: stoppedRows.length,
   };
+}
+
+// targetWeek的计划 + previousWeek的总结，生成PPT。返回 {blob, filename, planCount, summaryCount,
+// stoppedCount}，调用方负责触发下载（不在这里直接下载，方便以后如果要加预览环节）。
+// 独立现查一遍reportData——不复用任何外部已经拿到的数据，调用方如果想保证"下载的内容
+// 跟之前预览的内容完全一致"，应该改用上面的buildPptFromReportData()复用预览时的reportData，
+// 这个函数继续保留只是为了不强制所有调用方都必须先手动调一次buildReportRows()。
+export async function generatePptForWeek(targetWeek, previousWeek, allModules, { skipLiveDetail = false } = {}) {
+  const reportData = await buildReportRows(targetWeek, previousWeek, allModules, { skipLiveDetail });
+  return buildPptFromReportData(reportData, targetWeek);
 }

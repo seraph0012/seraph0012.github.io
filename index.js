@@ -11,7 +11,7 @@ import { mountSummarySection } from "./shared/summarySection.js";
 import { mountPlanSection } from "./shared/planSection.js";
 import { mountStoppedSection } from "./shared/stoppedSection.js";
 import { mountTaskCreateSection } from "./shared/taskCreateSection.js";
-import { generatePptForWeek, buildReportRows } from "./shared/pptGenerate.js";
+import { buildReportRows, buildPptFromReportData } from "./shared/pptGenerate.js";
 import { renderPreviewTables } from "./shared/tablePreview.js";
 import { cacheFirst, writeCache } from "./shared/localCache.js";
 import { buildDeliverableItemsFromEntries, renderDeliverableScreenshot } from "./shared/deliverableScreenshot.js";
@@ -28,6 +28,13 @@ let allWeeks = []; // 过滤掉is_normal=false的，周选择器/找上一周用
 let allWeeksRaw = []; // 未过滤，taskCreateSection的"第一次的例会周"下拉用(循环任务起始周可以是任意周)
 let targetWeek = null;
 let previousWeek = null;
+
+// 2026-08-06新增：用户反馈使用习惯是"下载之前一定先预览"，改成"下载"复用"预览"时已经
+// 拿到的那份reportData(而不是各自独立重新查一次)，保证"看到的预览"和"下载到的PPT"
+// 是完全同一份数据——两个按钮(未锁定视图的"预览"/已锁定视图自动触发的预览)都会写这个
+// 变量，"下载"按钮读它；weekId用来防止"切了周但没重新预览就点下载"这种情况下用到上一个
+// 周的旧数据(理论上"下载"按钮此时应该是disabled的，这里只是双重保险)。
+let lastPreviewData = null; // { reportData, weekId } | null
 
 function findPreviousWeek(week) {
   const earlier = allWeeks.filter((w) => w.natural_week_start < week.natural_week_start);
@@ -92,6 +99,8 @@ async function renderLockedPreview() {
     await refreshWeekFields();
     const reportData = await buildReportRows(targetWeek, previousWeek, allModules, { skipLiveDetail: true });
     renderPreviewTables(document.getElementById("locked-preview-root"), reportData);
+    lastPreviewData = { reportData, weekId: targetWeek.id };
+    document.getElementById("locked-generate-btn").disabled = false;
     resultEl.textContent = "";
     if (reportData.missingSnapshotCount > 0) {
       warnEl.textContent =
@@ -169,6 +178,11 @@ async function applyWeek(week) {
     document.getElementById("generate-result").className = "status";
     document.getElementById("locked-generate-result").textContent = "";
     document.getElementById("locked-generate-result").className = "status";
+    // 切周后上一个周预览出来的reportData不再对应当前周，"下载"按钮禁用，逼着用户对新的周
+    // 重新预览一次(未锁定视图手动点"预览"，已锁定视图下面会自动重新触发renderLockedPreview())。
+    lastPreviewData = null;
+    document.getElementById("generate-ppt-btn").disabled = true;
+    document.getElementById("locked-generate-btn").disabled = true;
     const lockedView = document.getElementById("locked-view");
     const editableView = document.getElementById("editable-view");
     if (targetWeek && isLocked()) {
@@ -268,11 +282,18 @@ document.getElementById("unlock-confirm-btn").addEventListener("click", async ()
 document.getElementById("locked-generate-btn").addEventListener("click", async () => {
   const resultEl = document.getElementById("locked-generate-result");
   if (!targetWeek) return;
+  // 2026-08-06：改成直接用renderLockedPreview()已经拿到的那份reportData，不再重新独立
+  // 查一次——按钮本身在预览成功前是disabled的，理论上走不到这个分支，这里只是双重保险
+  // (万一预览失败后用户切了别的操作又绕回来之类的边界情况)。
+  if (!lastPreviewData || lastPreviewData.weekId !== targetWeek.id) {
+    resultEl.textContent = "请先等预览加载完成（或刷新页面重试）再下载";
+    resultEl.className = "status error";
+    return;
+  }
   resultEl.textContent = "生成中...";
   resultEl.className = "status";
   try {
-    await refreshWeekFields();
-    const r = await generatePptForWeek(targetWeek, previousWeek, allModules, { skipLiveDetail: true });
+    const r = await buildPptFromReportData(lastPreviewData.reportData, targetWeek);
     const a = document.createElement("a");
     a.href = URL.createObjectURL(r.blob);
     a.download = r.filename;
@@ -288,7 +309,12 @@ document.getElementById("locked-generate-btn").addEventListener("click", async (
 
 document.getElementById("preview-ppt-btn").addEventListener("click", async () => {
   const resultEl = document.getElementById("generate-result");
+  const downloadBtn = document.getElementById("generate-ppt-btn");
   if (!targetWeek) return;
+  // 2026-08-06：每次重新预览前先禁用"下载"按钮——避免这次预览还没跑完/万一失败时，
+  // 按钮还停留在上一次预览成功后的可用状态，让用户下载到跟这次改动不一致的旧版本。
+  downloadBtn.disabled = true;
+  lastPreviewData = null;
   resultEl.textContent = "生成预览中...";
   resultEl.className = "status";
   try {
@@ -305,6 +331,12 @@ document.getElementById("preview-ppt-btn").addEventListener("click", async () =>
     await refreshWeekFields();
     const reportData = await buildReportRows(targetWeek, previousWeek, allModules);
     renderPreviewTables(document.getElementById("preview-root"), reportData);
+    // 2026-08-06：用户反馈使用习惯是"下载之前一定先预览"，把"下载"改成直接复用这次预览
+    // 拿到的reportData(见pptGenerate.js的buildPptFromReportData())，不再各自独立重新查
+    // 一次——保证"预览看到的"和"下载到的PPT"是完全同一份数据，不会出现两次独立请求之间
+    // 数据碰巧不一致的情况。预览成功才解锁"下载"按钮，逼着这个习惯变成强制流程。
+    lastPreviewData = { reportData, weekId: targetWeek.id };
+    downloadBtn.disabled = false;
     resultEl.textContent = "预览已生成（见下方，非精确还原，仅供核对内容）";
     resultEl.className = "status ok";
   } catch (err) {
@@ -316,14 +348,15 @@ document.getElementById("preview-ppt-btn").addEventListener("click", async () =>
 document.getElementById("generate-ppt-btn").addEventListener("click", async () => {
   const resultEl = document.getElementById("generate-result");
   if (!targetWeek) return;
+  if (!lastPreviewData || lastPreviewData.weekId !== targetWeek.id) {
+    resultEl.textContent = "请先点\"预览\"再下载";
+    resultEl.className = "status error";
+    return;
+  }
   resultEl.textContent = "生成中...";
   resultEl.className = "status";
   try {
-    // 同上"预览"按钮：生成前先flush"重点工作"/"备注"这两个容易被漏点保存的独立字段，
-    // 再强制刷新一次targetWeek/previousWeek(绕开可能过期的本地缓存)。见两个函数定义处注释。
-    await summaryCtrl.flushReviewFields();
-    await refreshWeekFields();
-    const r = await generatePptForWeek(targetWeek, previousWeek, allModules);
+    const r = await buildPptFromReportData(lastPreviewData.reportData, targetWeek);
     const a = document.createElement("a");
     a.href = URL.createObjectURL(r.blob);
     a.download = r.filename;
