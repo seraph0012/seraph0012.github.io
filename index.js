@@ -13,7 +13,7 @@ import { mountStoppedSection } from "./shared/stoppedSection.js";
 import { mountTaskCreateSection } from "./shared/taskCreateSection.js";
 import { generatePptForWeek, buildReportRows } from "./shared/pptGenerate.js";
 import { renderPreviewTables } from "./shared/tablePreview.js";
-import { cacheFirst } from "./shared/localCache.js";
+import { cacheFirst, writeCache } from "./shared/localCache.js";
 import { buildDeliverableItemsFromEntries, renderDeliverableScreenshot } from "./shared/deliverableScreenshot.js";
 import { snapshotWeekDetail } from "./shared/taskLabels.js";
 
@@ -33,6 +33,27 @@ function findPreviousWeek(week) {
   const earlier = allWeeks.filter((w) => w.natural_week_start < week.natural_week_start);
   if (earlier.length === 0) return null;
   return earlier.reduce((a, b) => (a.natural_week_start > b.natural_week_start ? a : b));
+}
+
+// 2026-08-06修复真实bug：meeting_weeks走cache-first(见shared/localCache.js)，init()里"有
+// localStorage缓存就直接用，不等fresh请求"这条分支意味着targetWeek/previousWeek整个页面
+// 生命周期里都可能是打开页面那一刻localStorage里的旧快照——如果review_key_points/
+// review_remarks是在另一天/另一个浏览器session编辑保存的，这次打开页面时本地缓存还没来得及
+// 被那次编辑后台刷新过，就会读到旧值(可能是完全没填的空值)。这正是用户反馈的"第一次下载
+// PPT时重点工作是空的，重新打开网页(这次本地缓存已经被上次打开时的后台fetch刷新过了)下载
+// 就有了"——不是没点保存/没锁定，是本地缓存本身过期，且过期后除了整页刷新以外没有任何
+// 别的机制会主动纠正它(updateMeetingWeekFields()只写DB+内存里的week对象，从来不碰
+// localStorage缓存)。生成PPT这类"必须准确"的操作前，强制不经缓存查一次最新的
+// meeting_weeks整表，把targetWeek/previousWeek(以及它们在allWeeks里的同一个对象引用)
+// 更新到最新值，顺便把这次拿到的新数据写回缓存(下次打开页面也是新的)。
+async function refreshWeekFields() {
+  const fresh = await listMeetingWeeks();
+  writeCache("meeting_weeks", fresh);
+  for (const w of [targetWeek, previousWeek]) {
+    if (!w) continue;
+    const match = fresh.find((f) => f.id === w.id);
+    if (match) Object.assign(w, match);
+  }
 }
 
 function renderWeekInfo() {
@@ -68,6 +89,7 @@ async function renderLockedPreview() {
   resultEl.textContent = "加载中...";
   resultEl.className = "status";
   try {
+    await refreshWeekFields();
     const reportData = await buildReportRows(targetWeek, previousWeek, allModules, { skipLiveDetail: true });
     renderPreviewTables(document.getElementById("locked-preview-root"), reportData);
     resultEl.textContent = "";
@@ -249,6 +271,7 @@ document.getElementById("locked-generate-btn").addEventListener("click", async (
   resultEl.textContent = "生成中...";
   resultEl.className = "status";
   try {
+    await refreshWeekFields();
     const r = await generatePptForWeek(targetWeek, previousWeek, allModules, { skipLiveDetail: true });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(r.blob);
@@ -270,11 +293,16 @@ document.getElementById("preview-ppt-btn").addEventListener("click", async () =>
   resultEl.className = "status";
   try {
     // 2026-08-06修复真实bug：用户反馈第一次下载的PPT里"重点工作完成情况"是空的，重新打开
-    // 页面再下载一次就有了——根因是"重点工作"/"备注"文本框各自有独立的"保存"按钮，跟下面
-    // "总结条目"表格的保存是两回事，用户以为点了表格的"保存"就万事俱全，实际这两个文本框
-    // 没被保存，buildReportRows读的是previousWeek.review_key_points这个内存里的旧值。
-    // 预览/生成前先flush这两个字段，不依赖用户记得点对那个小"保存"按钮。
+    // 页面再下载一次就有了。排查后确认是两层问题叠加：①"重点工作"/"备注"文本框各自有
+    // 独立的"保存"按钮，跟下面"总结条目"表格的保存是两回事，如果这次刚编辑、还没点那个
+    // 小"保存"就直接生成，flushReviewFields()兜底补一次；②(真正对上用户描述的场景——
+    // 用户明确反馈两次下载之间既没点保存也没点锁定)meeting_weeks走cache-first，如果
+    // review_key_points是在更早的另一天/另一个session编辑保存的，这次打开页面时本地
+    // localStorage缓存可能还是那次编辑之前的旧快照(缓存只在下次访问时被后台请求悄悄
+    // 刷新，编辑保存本身从不主动更新它)，refreshWeekFields()强制不经缓存拿一次最新数据。
+    // 详见refreshWeekFields()定义处注释。
     await summaryCtrl.flushReviewFields();
+    await refreshWeekFields();
     const reportData = await buildReportRows(targetWeek, previousWeek, allModules);
     renderPreviewTables(document.getElementById("preview-root"), reportData);
     resultEl.textContent = "预览已生成（见下方，非精确还原，仅供核对内容）";
@@ -291,8 +319,10 @@ document.getElementById("generate-ppt-btn").addEventListener("click", async () =
   resultEl.textContent = "生成中...";
   resultEl.className = "status";
   try {
-    // 同上"预览"按钮：生成前先flush"重点工作"/"备注"这两个容易被漏点保存的独立字段。
+    // 同上"预览"按钮：生成前先flush"重点工作"/"备注"这两个容易被漏点保存的独立字段，
+    // 再强制刷新一次targetWeek/previousWeek(绕开可能过期的本地缓存)。见两个函数定义处注释。
     await summaryCtrl.flushReviewFields();
+    await refreshWeekFields();
     const r = await generatePptForWeek(targetWeek, previousWeek, allModules);
     const a = document.createElement("a");
     a.href = URL.createObjectURL(r.blob);
