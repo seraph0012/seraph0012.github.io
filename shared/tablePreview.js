@@ -44,9 +44,14 @@ function renderTable(title, headers, rows) {
 // 和实际生成PPT用的是完全同一份数据+格式化结果。
 export function renderPreviewTables(container, reportData) {
   const { planRows, summaryRows, stoppedRows, meetingLine1, meetingLine2, reviewKeyPointsText, reviewRemarksText } = reportData;
+  // 2026-08-06新增：重点工作完成情况为空时用红色标出来——不阻断、不报错，只是给下载前的
+  // 最后一道视觉提醒(排查"第一次下载PPT重点工作是空的"这次真实反馈时，没能完全确定
+  // 根因，加这个作为兜底，即使以后又遇到没查出来的原因导致这里意外是空的，用户也能在
+  // 下载前一眼看出来该补，而不是下载完打开PPT才发现)。
+  const reviewEmpty = !reviewKeyPointsText;
   const reviewHtml = reviewKeyPointsText
     ? reviewKeyPointsText.split("\n").map((line) => escapeHtml(line)).join("<br />")
-    : "(空)";
+    : "(空——未填写，下载的PPT里这里也会是空的，下载前建议先回①区块补充)";
   const remarksHtml = reviewRemarksText
     ? reviewRemarksText.split("\n").map((line) => escapeHtml(line)).join("<br />")
     : "(空)";
@@ -54,8 +59,8 @@ export function renderPreviewTables(container, reportData) {
     <div class="preview-box">
       <p class="status">预览（非精确还原，仅供核对内容）</p>
       <p><strong>${escapeHtml(meetingLine1)}</strong><br />${escapeHtml(meetingLine2)}</p>
-      <h4>周工作计划复核情况（重点工作完成情况）</h4>
-      <p>${reviewHtml}</p>
+      <h4 style="${reviewEmpty ? "color:#c00;" : ""}">周工作计划复核情况（重点工作完成情况）${reviewEmpty ? "⚠" : ""}</h4>
+      <p style="${reviewEmpty ? "color:#c00;font-weight:bold;border:1px solid #c00;padding:4px;" : ""}">${reviewHtml}</p>
       <h4>周工作计划复核情况（备注）</h4>
       <p>${remarksHtml}</p>
       ${renderTable("周工作总结", SUMMARY_HEADERS, summaryRows)}
