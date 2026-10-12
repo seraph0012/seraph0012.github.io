@@ -2,15 +2,28 @@ name: Keep Supabase project alive
 
 on:
   schedule:
-    # 每3天一次，防止Supabase免费层因7天无活动自动暂停项目
-    - cron: "0 3 */3 * *"
+    # 每天一次，防止Supabase免费层因7天无活动自动暂停项目
+    - cron: "17 3 * * *"
   workflow_dispatch: {}
+
+permissions:
+  actions: write
 
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping Supabase REST endpoint
+      - name: Write heartbeat row via RPC
+        # 必须是真实写入：只读GET实测不被Supabase算作活动（见sql/0028）
         run: |
-          curl -sf "https://tbmrdgyyjafoldggtxtb.supabase.co/rest/v1/connection_test?select=id&limit=1" \
-            -H "apikey: sb_publishable_xwMx51W9aNry5-bSmtjK2Q_homqfKjY"
+          curl -sf -X POST "https://tbmrdgyyjafoldggtxtb.supabase.co/rest/v1/rpc/keep_alive_ping" \
+            -H "apikey: sb_publishable_xwMx51W9aNry5-bSmtjK2Q_homqfKjY" \
+            -H "Content-Type: application/json" \
+            -d '{}'
+
+      - name: Re-enable this workflow
+        # GitHub会在仓库60天没有提交后自动停用定时工作流；每次运行都重新enable一次来重置这个计时
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/keep-alive.yml/enable"
